@@ -112,6 +112,12 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
     assert.match(unavailable.stdout, /503/);
     assert.equal(events.size, 0);
     const cursor = readFileSync(join(root, "feishu-review/work/ou_me/cursor.json"), "utf8");
+    assert.equal((await run("scan")).code, 0);
+    assert.equal(
+      readFileSync(join(root, "feishu-review/work/ou_me/cursor.json"), "utf8"),
+      cursor,
+      "another unacknowledged scan must not advance the saved cursor",
+    );
     rejectPost = false;
     assert.equal((await run("scan")).code, 0);
     assert.notEqual(readFileSync(join(root, "feishu-review/work/ou_me/cursor.json"), "utf8"), cursor);

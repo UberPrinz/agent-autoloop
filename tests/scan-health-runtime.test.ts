@@ -19,7 +19,7 @@ test("fake glab and lark scans preserve causes, finish without backoff, notify l
       context = join(root, "context.json");
     execFileSync("git", ["init", "--bare", bare], { stdio: "ignore" });
     execFileSync("git", ["--git-dir", bare, "remote", "add", "origin", "https://gitlab.example.com/team/repo.git"]);
-    const fail = `const mode=require('fs').readFileSync(${JSON.stringify(mode)},'utf8');if(mode==='network'){console.error('proxyconnect ECONNREFUSED glpat-private-secret');process.exit(7);}if(mode==='access'){console.log(JSON.stringify({error:{type:'authentication',code:'EXPIRED',message:'login expired'}}));process.exit(8);}if(mode==='bug'){console.error('unknown option --bad');process.exit(9);}`;
+    const fail = `const mode=require('fs').readFileSync(${JSON.stringify(mode)},'utf8');if(mode==='network'){console.error('proxyconnect ECONNREFUSED glpat-private-secret');process.exit(7);}if(mode==='rate'){process.stdout.write('HTTP/1.1 429 Too Many Requests\\r\\nRetry-After: 0\\r\\n\\r\\n{}');process.exit(1);}if(mode==='lark-rate'){console.log(JSON.stringify({ok:false,error:{type:'rate_limit',code:99991400,message:'request limit reached'}}));process.exit(2);}if(mode==='http503'){console.error('HTTP 503 Service Unavailable');process.exit(3);}if(mode==='http429'){console.error('HTTP 429 Too Many Requests');process.exit(3);}if(mode==='json503'){console.log(JSON.stringify({error:{type:'api',code:503,message:'service unavailable'}}));process.exit(3);}if(mode==='access'){console.log(JSON.stringify({error:{type:'authentication',code:'EXPIRED',message:'login expired'}}));process.exit(8);}if(mode==='bug'){console.error('unknown option --bad');process.exit(9);}`;
     writeFileSync(
       glab,
       `#!${process.execPath}\n${fail}const p=process.argv[3];console.log(JSON.stringify(p==='user'?{id:8}:p==='projects/42'?{id:42,path_with_namespace:'team/repo',http_url_to_repo:'https://gitlab.example.com/team/repo.git'}:[]));`,
@@ -57,6 +57,19 @@ test("fake glab and lark scans preserve causes, finish without backoff, notify l
         ],
       }),
     );
+    const timeoutHook = join(root, "timeout-hook.mjs");
+    writeFileSync(
+      timeoutHook,
+      `import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';import {readFileSync} from 'node:fs';const real=cp.execFile;cp.execFile=(program,args,options,callback)=>real(program,args,{...options,timeout:program===${JSON.stringify(lark)}&&readFileSync(${JSON.stringify(mode)},'utf8')==='timeout'?50:options.timeout},callback);syncBuiltinESMExports();`,
+    );
+    const originalLark = readFileSync(lark, "utf8");
+    writeFileSync(
+      lark,
+      originalLark.replace(
+        "console.log(JSON.stringify(process.argv[2]",
+        "if(mode==='timeout'){setInterval(()=>{},1000);}else console.log(JSON.stringify(process.argv[2]",
+      ),
+    );
     for (const kind of ["gitlab", "feishu-review"]) {
       const run = (state: string, open: any[] = []) => {
         writeFileSync(mode, state);
@@ -65,8 +78,12 @@ test("fake glab and lark scans preserve causes, finish without backoff, notify l
           process.execPath,
           kind === "gitlab"
             ? [resolve("plugins/gitlab/poll.ts"), "--config", config]
-            : [resolve("plugins/feishu/review-runtime.ts"), "scan", "--config", feishu],
-          { encoding: "utf8", env: { ...process.env, AGENT_AUTOLOOP_HOME: root, AGENT_AUTOLOOP_CONTEXT: context } },
+            : ["--import", timeoutHook, resolve("plugins/feishu/review-runtime.ts"), "scan", "--config", feishu],
+          {
+            encoding: "utf8",
+            timeout: 3000,
+            env: { ...process.env, AGENT_AUTOLOOP_HOME: root, AGENT_AUTOLOOP_CONTEXT: context },
+          },
         );
         return { ...child, parsed: resultFrom(readMessage(child.stdout), {}) };
       };
@@ -90,6 +107,26 @@ test("fake glab and lark scans preserve causes, finish without backoff, notify l
       const recovered = run("ok", open);
       assert.equal(recovered.status, 0, recovered.stderr);
       assert.equal(recovered.parsed.result.resolve?.[0].card, 3);
+      if (kind === "gitlab") {
+        const limited = run("rate");
+        assert.equal(limited.status, 0, limited.stderr);
+        assert.equal(limited.parsed.result.outcome, "done");
+        assert.match(limited.stdout, /429/);
+      }
+      if (kind === "feishu-review") {
+        for (const state of ["lark-rate", "http503", "http429", "json503"]) {
+          const unavailable = run(state);
+          assert.equal(unavailable.status, 0, unavailable.stderr);
+          assert.equal(unavailable.parsed.result.outcome, "done");
+          assert.equal(unavailable.parsed.result.notice?.length ?? 0, 0);
+          assert.match(unavailable.stdout, /99991400|503|429/);
+        }
+        const timeout = run("timeout");
+        assert.equal(timeout.status, 0, timeout.stderr);
+        assert.equal(timeout.parsed.result.outcome, "done");
+        assert.match(timeout.stdout, /ETIMEDOUT/);
+        assert.equal(timeout.parsed.result.notice?.length ?? 0, 0);
+      }
       const access = run("access");
       assert.equal(access.status, 0, access.stderr);
       assert.match(access.stdout, /EXPIRED/);

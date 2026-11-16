@@ -88,3 +88,64 @@ test("fetch diagnostics retain cause and host while TypeError alone is not trans
     globalThis.fetch = original;
   }
 });
+
+test("unknown comment writes preserve sanitized diagnostics on first failure and replay without reposting", async () => {
+  const { publishOne } = await import("../plugins/gitlab/publish.ts");
+  const { readFileSync } = await import("node:fs");
+  const command = (await import("../plugins/command/agent.ts")).default;
+  const root = mkdtempSync(join(tmpdir(), "publish-diagnostics-"));
+  const logs: string[] = [];
+  const original = console.error;
+  console.error = (text) => {
+    logs.push(String(text));
+  };
+  let posts = 0;
+  try {
+    const item = { actionKey: "a".repeat(64), body: "review", position: null };
+    const io = {
+      current: async () => true,
+      find: async () => null,
+      post: async () => {
+        posts++;
+        throw new GitLabWriteError(null, "GitLab 写入（退出码 7）：proxyconnect ECONNREFUSED glpat-private-value");
+      },
+    };
+    for (let round = 0; round < 2; round++) {
+      logs.length = 0;
+      assert.equal(await publishOne(root, "b".repeat(64), item, io), "unknown");
+      const error = command.read("", 1, logs.join("\n") + "\n评论发送结果不明，请本人在 GitLab 核查").error!;
+      assert.match(error, /proxyconnect.*ECONNREFUSED/);
+      assert.doesNotMatch(error, /private-value/);
+    }
+    assert.equal(posts, 1);
+    const raw = readFileSync(join(root, "actions", item.actionKey, "post-failure.json"), "utf8");
+    assert.match(raw, /ECONNREFUSED/);
+    assert.doesNotMatch(raw, /private-value/);
+  } finally {
+    console.error = original;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a connection lost while reading the Hub receipt retains host and transport cause", async () => {
+  const { postEvent } = await import("../plugins/gitlab/errors.ts");
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async () =>
+      ({
+        ok: true,
+        json: async () => {
+          throw new TypeError("terminated", {
+            cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
+          });
+        },
+      }) as unknown as Response;
+    await assert.rejects(postEvent("http://hub.invalid/v1/events", {}), (error: any) => {
+      assert.ok(error instanceof TemporaryError);
+      assert.match(error.message, /hub.invalid.*ECONNRESET/);
+      return true;
+    });
+  } finally {
+    globalThis.fetch = original;
+  }
+});

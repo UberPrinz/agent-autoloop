@@ -37,7 +37,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
   if ((!mrUrl && (overrides.length || reason)) || (overrides.length && !reason.trim()))
     throw new Error("覆盖条件需要目标和原因");
   const config = loadConfig(argv[1]);
-  const gl = new GitLab(config.glabPath, config.instanceUrl);
+  const gl = new GitLab(config.glabPath, config.instanceUrl, !!mrUrl);
   const user = (await gl.get("user")) as { id?: number };
   if (user?.id !== config.reviewerId) throw new Error("GitLab 登录身份与配置不符");
   const token = readFileSync(config.sourceKeyPath, "utf8").trim();
@@ -128,14 +128,11 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
           detail: JSON.stringify(detail),
           link: mrUrl,
         };
-        const response = await postEvent(`${config.hubUrl}/v1/events`, {
+        const receipt: any = await postEvent(`${config.hubUrl}/v1/events`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify(event),
         });
-        if (response.status >= 500 || response.status === 429) throw new TemporaryError("中台暂时不可用");
-        if (!response.ok) throw new Error(`中台接收失败（${response.status}）`);
-        const receipt = (await response.json()) as any;
         if (
           !Number.isSafeInteger(receipt.event) ||
           typeof receipt.duplicate !== "boolean" ||
@@ -165,14 +162,12 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
         read: (iid) => latestRequest(join(config.dataRoot, "gitlab"), project.id, iid),
         write: (record) => saveRequest(join(config.dataRoot, "gitlab"), record),
         post: async (event) => {
-          const response = await postEvent(`${config.hubUrl}/v1/events`, {
+          const receipt: any = await postEvent(`${config.hubUrl}/v1/events`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
             body: JSON.stringify(event),
           });
-          if (response.status >= 500 || response.status === 429) throw new TemporaryError("中台暂时不可用");
-          if (!response.ok) throw new Error(`中台接收失败（${response.status}）`);
-          return (await response.json()) as { event: number; duplicate: boolean; routed: string[] };
+          return receipt as { event: number; duplicate: boolean; routed: string[] };
         },
       });
     } catch (error) {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { cliFailure, TemporaryError } from "./errors.ts";
+import { cliFailure } from "./errors.ts";
 export { TemporaryError } from "./errors.ts";
 export class GitLabWriteError extends Error {
   readonly status: number | null;
@@ -11,9 +11,11 @@ export class GitLabWriteError extends Error {
 export class GitLab {
   private readonly program: string;
   private readonly origin: string;
-  constructor(program: string, origin: string) {
+  private readonly retryRateLimit: boolean;
+  constructor(program: string, origin: string, retryRateLimit = true) {
     this.program = program;
     this.origin = origin;
+    this.retryRateLimit = retryRateLimit;
   }
   private async call(path: string): Promise<{ body: unknown; headers: string }> {
     if (!/^[a-zA-Z0-9_/?=&.%+-]+$/.test(path) || path.startsWith("/")) throw new Error("接口路径无效");
@@ -37,6 +39,7 @@ export class GitLab {
     });
     const match = /^HTTP\/\S+\s+(\d{3})[^\r\n]*\r?\n((?:[^\r\n]+\r?\n)*)\r?\n([\s\S]*)$/.exec(result.output);
     if (match?.[1] === "429") {
+      if (!this.retryRateLimit) throw cliFailure("GitLab 读取", result.code, result.errors, match[3], 429);
       const retry = /^retry-after:\s*(.+)\s*$/im.exec(match[2])?.[1]?.trim();
       if (!retry) throw cliFailure("GitLab 读取", result.code, result.errors, match[3], 429);
       const delay = /^\d+$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now();

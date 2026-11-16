@@ -57,7 +57,16 @@ export async function runFeishuReview(action: string, file: string) {
         { encoding: "utf8", timeout: 60_000, maxBuffer: 8 * 1024 * 1024 },
         (error, stdout, stderr) => {
           if (error) {
-            reject(cliFailure(`飞书 ${args.slice(0, 2).join(" ")}`, error.code ?? null, stderr, stdout));
+            reject(
+              cliFailure(
+                `飞书 ${args.slice(0, 2).join(" ")}`,
+                error.code ?? null,
+                error.killed && error.signal === "SIGTERM"
+                  ? `ETIMEDOUT：飞书命令执行超时；${stderr}`
+                  : stderr || (stdout.trim() ? "" : error.message),
+                stdout,
+              ),
+            );
             return;
           }
           try {
@@ -159,7 +168,7 @@ export async function runFeishuReview(action: string, file: string) {
               continue;
             atomicFile(requestFile(request.id), JSON.stringify(request), true);
           }
-          const response = await postEvent(`${config.hubUrl}/v1/events`, {
+          const receipt: any = await postEvent(`${config.hubUrl}/v1/events`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
             body: JSON.stringify({
@@ -170,8 +179,6 @@ export async function runFeishuReview(action: string, file: string) {
               detail: JSON.stringify({ requestId: request.id }),
             }),
           });
-          if (!response.ok) throw new Error(`飞书请求未交给中台（${response.status}）`);
-          const receipt: any = await response.json();
           if (
             !Number.isSafeInteger(receipt.event) ||
             typeof receipt.duplicate !== "boolean" ||

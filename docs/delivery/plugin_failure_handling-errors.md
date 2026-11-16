@@ -1,6 +1,6 @@
 # 插件错误路径归类
 
-扫描入口：`rg -n 'throw new Error' plugins`。逐条核对抛出点及入口 catch；以下行号对应 3.2 实施时版本，后续改动可能移动行号。分类仅用于审计，不扩大修改范围。
+扫描入口：`rg -n 'throw new Error' plugins`。逐条核对抛出点及入口 catch；以下行号对应最终审查版本。分类仅用于审计，不扩大修改范围。
 
 - 没事可做：GitLab 执行前准入不满足、手动扫描准入不满足已改为正常返回；飞书请求沿用此结论并生成原因通知。已合并、关闭、旧版本及已发布等原有正常结局保持不变。
 - 临时：CLI 明确的网络、代理、DNS、超时、5xx、429，以及中台 fetch 的对应原因；3.3 仅为两个扫描入口改变调度行为，review 仍保留失败重试。
@@ -8,6 +8,8 @@
 - bug：参数、可信配置、协议/数据格式、完整性和输出契约错误，保留原始脱敏原因，不冒充临时网络故障。
 
 GitHub source 的验签错误由 HTTP 层拒绝，Webhook / 飞书 channel 错误由通道层报告失败，并非 review 进程的退出码路径；仍列出，避免漏项。其他 delivery / ACP 的调度行为不在本任务修改范围。动态 HTTP / CLI 错误无法仅凭 throw 行确定运行时分类，表中明确按实际原因分支，不能将所有非零退出一律算临时。
+
+最终扫描共 166 个 `throw new Error` 抛出点。两个准入抛出点已删除，分类为“没事可做”；新增 `cliFailure` / `classified` 依明确传输原因返回临时或访问错误，保持程序错误独立。
 
 | 抛出位置 | 原因表达式 | 分类 |
 | --- | --- | --- |
@@ -30,7 +32,7 @@ GitHub source 的验签错误由 HTTP 层拒绝，Webhook / 飞书 channel 错�
 | `plugins/delivery/delivery.ts:78` | "已经合并，发布没有通过；修复发布后重交，不要重复提交代码") | 需要本人 |
 | `plugins/delivery/github.ts:25` | "仓库要写成 owner/name") | bug（程序 / 配置 / 数据契约） |
 | `plugins/delivery/github.ts:41` | "仓库要写成 owner/name") | bug（程序 / 配置 / 数据契约） |
-| `plugins/delivery/github.ts:73` | "GitHub 没有接受合并") | bug（程序 / 配置 / 数据契约） |
+| `plugins/delivery/github.ts:73` | "GitHub 没有接受合并") | 需要本人（核实拒绝原因，不能冒充合并成功） |
 | `plugins/delivery/github.ts:97` | "等待超过半小时，保留远端状态，稍后继续核实") | 临时（业务状态待核实，非扫描网络故障） |
 | `plugins/delivery/input.ts:11` | "事项编号不正确") | bug（程序 / 配置 / 数据契约） |
 | `plugins/delivery/input.ts:8` | "事件没有指向规则指定仓库的同一个事项") | bug（程序 / 配置 / 数据契约） |
@@ -41,30 +43,29 @@ GitHub source 的验签错误由 HTTP 层拒绝，Webhook / 飞书 channel 错�
 | `plugins/feishu/agent.ts:9` | "飞书请求命令只接受 scan 或 review 和配置路径") | bug（程序 / 配置 / 数据契约） |
 | `plugins/feishu/channel.ts:108` | `lark-cli ${args.slice(0, 3).join(" ")}: ${JSON.stringify(out.error ?? out).slice(0, 300)}`) | 临时 / 需要本人 / bug（依 CLI 原因） |
 | `plugins/feishu/channel.ts:113` | "飞书通道要在 config.json 写 user，或者先 lark-cli auth login") | 需要本人 |
-| `plugins/feishu/review-runtime.ts:100` | "GitLab 来源密钥为空") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:168` | `飞书请求未交给中台（${response.status}）`) | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:176` | "飞书请求未匹配唯一处理规则；修复后需重新投递未路由事件") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:182` | "缺少飞书请求上下文") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:184` | "飞书请求上下文无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:230` | "请提供 scan/review 和配置路径") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:23` | "飞书审查配置无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:28` | "飞书路由名称无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:30` | "飞书模糊请求配置无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:43` | "飞书请求编号无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:48` | "飞书请求记录不一致") | bug（程序 / 配置 / 数据契约） |
-| `plugins/feishu/review-runtime.ts:81` | "飞书扫描时间记录无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:114` | "GitLab 来源密钥为空") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:188` | "飞书请求未匹配唯一处理规则；修复后需重新投递未路由事件") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:196` | "缺少飞书请求上下文") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:198` | "飞书请求上下文无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:244` | "请提供 scan/review 和配置路径") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:24` | "飞书审查配置无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:29` | "飞书路由名称无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:31` | "飞书模糊请求配置无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:44` | "飞书请求编号无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:49` | "飞书请求记录不一致") | bug（程序 / 配置 / 数据契约） |
+| `plugins/feishu/review-runtime.ts:95` | "飞书扫描时间记录无效") | bug（程序 / 配置 / 数据契约） |
 | `plugins/feishu/review.ts:80` | "飞书消息读取失败或返回格式不完整") | bug（程序 / 配置 / 数据契约） |
 | `plugins/feishu/review.ts:84` | "飞书消息分页未完成") | bug（程序 / 配置 / 数据契约） |
 | `plugins/github/source.ts:12` | "signature") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/agent.ts:11` | "GitLab 命令只接受 scan 或 review 和配置路径") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/agent.ts:20` | "模型配置与执行参数不一致") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/api.ts:19` | "接口路径无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/api.ts:43` | "GitLab 限流等待时间无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/api.ts:58` | "GitLab 返回的数据无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/api.ts:66` | "接口路径无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/api.ts:72` | "GitLab 分页无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/api.ts:76` | "GitLab 列表无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/api.ts:83` | "接口路径无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/api.ts:21` | "接口路径无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/api.ts:46` | "GitLab 限流等待时间无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/api.ts:61` | "GitLab 返回的数据无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/api.ts:69` | "接口路径无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/api.ts:75` | "GitLab 分页无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/api.ts:79` | "GitLab 列表无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/api.ts:86` | "接口路径无效") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/artifacts.ts:17` | "摘要无效") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/artifacts.ts:19` | "文件内容与摘要不符") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/artifacts.ts:22` | "文件版本无效") | bug（程序 / 配置 / 数据契约） |
@@ -93,13 +94,11 @@ GitHub source 的验签错误由 HTTP 层拒绝，Webhook / 飞书 channel 错�
 | `plugins/gitlab/manual.ts:13` | "MR 地址不属于配置项目") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/manual.ts:15` | "MR 编号无效") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/native.ts:124` | "Skill 目录信息无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/poll.ts:137` | `中台接收失败（${response.status}）`) | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/poll.ts:144` | "中台回执无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/poll.ts:147` | "项目规则未路由") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/poll.ts:156` | "MR 编号无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/poll.ts:174` | `中台接收失败（${response.status}）`) | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/poll.ts:184` | "MR 不属于配置实例或项目") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/poll.ts:186` | errors.join("；")) | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/poll.ts:141` | "中台回执无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/poll.ts:144` | "项目规则未路由") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/poll.ts:153` | "MR 编号无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/poll.ts:179` | "MR 不属于配置实例或项目") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/poll.ts:181` | errors.join("；")) | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/poll.ts:21` | "请提供配置文件路径") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/poll.ts:32` | "覆盖项无效") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/poll.ts:35` | "参数无效") | bug（程序 / 配置 / 数据契约） |
@@ -108,9 +107,9 @@ GitHub source 的验签错误由 HTTP 层拒绝，Webhook / 飞书 channel 错�
 | `plugins/gitlab/poll.ts:42` | "GitLab 登录身份与配置不符") | 需要本人 |
 | `plugins/gitlab/poll.ts:44` | "来源密钥为空") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/presentation.ts:31` | "完整报告超出飞书可展示的容量，未创建发布确认，也未发布评论。") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/publish.ts:31` | "发送记录无效") | bug（程序 / 配置 / 数据契约） |
-| `plugins/gitlab/publish.ts:41` | "远端记录无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/publish.ts:41` | "发送记录无效") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/publish.ts:51` | "远端记录无效") | bug（程序 / 配置 / 数据契约） |
+| `plugins/gitlab/publish.ts:61` | "远端记录无效") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/report.ts:42` | "报告超过大小限制") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/report.ts:59` | "报告格式不符合要求") | bug（程序 / 配置 / 数据契约） |
 | `plugins/gitlab/request.ts:110` | "请求观察序号冲突") | bug（程序 / 配置 / 数据契约） |

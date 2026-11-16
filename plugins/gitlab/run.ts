@@ -2,7 +2,7 @@ import { diagnostic } from "./errors.ts";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, policyHash } from "./config.ts";
-import { GitLab, TemporaryError } from "./api.ts";
+import { GitLab } from "./api.ts";
 import { hash, canonical } from "./storage.ts";
 import { completedReport, loadArtifact, saveArtifact } from "./artifacts.ts";
 import { selectRequest, obsoleteCards, eventMatches, type Request } from "./review.ts";
