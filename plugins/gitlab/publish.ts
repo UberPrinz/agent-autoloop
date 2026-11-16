@@ -2,6 +2,7 @@ import { existsSync, readFileSync, unlinkSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { atomicFile, claimAction, canonical } from "./storage.ts";
 import { GitLabWriteError } from "./api.ts";
+import { diagnostic } from "./errors.ts";
 type Item = { actionKey: string; body: string; position: { head_sha: string } | null };
 type Remote = { discussionId: string; noteId: number; position: unknown };
 type IO = {
@@ -26,6 +27,15 @@ export async function publishOne(
 ): Promise<"sent" | "unknown" | "stale" | "sent-stale"> {
   const dir = join(root, "actions", item.actionKey),
     sent = join(dir, "sent.json");
+  function unknown() {
+    const file = join(dir, "post-failure.json");
+    if (existsSync(file)) {
+      const evidence = JSON.parse(readFileSync(file, "utf8"));
+      // Leave room for the caller's unknown-result explanation in the worker's 300-character tail.
+      if (typeof evidence.reason === "string") console.error(diagnostic(evidence.reason, 220));
+    }
+    return "unknown" as const;
+  }
   if (existsSync(sent)) {
     const value = JSON.parse(readFileSync(sent, "utf8"));
     if (value.schema !== 1 || !valid(value, item)) throw new Error("发送记录无效");
@@ -47,7 +57,7 @@ export async function publishOne(
   }
   if (!claimed) {
     const found = await io.find(item);
-    if (!found) return "unknown";
+    if (!found) return unknown();
     if (!valid(found, item)) throw new Error("远端记录无效");
     const record = { schema: 1, ...found, sentAt: new Date().toISOString() };
     atomicFile(sent, JSON.stringify(record));
@@ -85,17 +95,18 @@ export async function publishOne(
         schema: 1,
         kind: status === null ? "transport_or_unknown" : "http_response",
         status,
+        reason: diagnostic((error as Error).message),
         at: new Date().toISOString(),
       }),
     );
-    return "unknown";
+    return unknown();
   }
   if (!valid(result, item)) {
     atomicFile(
       join(dir, "post-failure.json"),
       JSON.stringify({ schema: 1, kind: "invalid_response", status: 201, at: new Date().toISOString() }),
     );
-    return "unknown";
+    return unknown();
   }
   const record = { schema: 1, ...result, sentAt: new Date().toISOString() };
   atomicFile(sent, JSON.stringify(record));

@@ -40,6 +40,7 @@ export function classified(message: string, status?: number): Error {
   if (
     status === 429 ||
     (status !== undefined && status >= 500) ||
+    /\brate_limit\b|\b99991400\b|\bHTTP(?:\/[\d.]+)?[ :=]+(?:429|5\d\d)\b/i.test(message) ||
     /\b(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)\b|proxyconnect|proxy connection|connection refused|connection reset|timed? ?out|timeout|no such host|temporary failure in name resolution/i.test(
       message,
     )
@@ -56,30 +57,37 @@ export function cliFailure(
   status?: number,
 ): Error {
   let detail = stderr.trim();
-  if (!detail) {
-    try {
-      const parsed = JSON.parse(stdout);
-      const error = parsed.error ?? parsed;
-      detail = [error.type, error.code, error.message].filter((v) => v !== undefined).join(" ");
-    } catch {}
-  }
+  let errorCode: unknown;
+  try {
+    const parsed = JSON.parse(detail || stdout);
+    const error = parsed.error ?? parsed;
+    errorCode = error.code;
+    if (!detail) detail = [error.type, error.code, error.message].filter((v) => v !== undefined).join(" ");
+  } catch {}
+  // CLI error codes in the HTTP range are transport evidence; other service codes retain their own meaning.
+  if (
+    status === undefined &&
+    typeof errorCode === "number" &&
+    ([401, 403, 429].includes(errorCode) || (errorCode >= 500 && errorCode <= 599))
+  )
+    status = errorCode;
   const prefix = `${label}（退出码 ${code}${status ? `，HTTP ${status}` : ""}）：`;
   const error = classified(detail, status);
   error.message = prefix + diagnostic(detail || "没有错误详情", Math.max(0, 300 - prefix.length));
   return error;
 }
 
-export async function postEvent(url: string, init: RequestInit): Promise<Response> {
+export async function postEvent(url: string, init: RequestInit): Promise<unknown> {
   const host = new URL(url).host;
-  let response: Response;
   try {
-    response = await fetch(url, init);
+    const response = await fetch(url, init);
+    if (!response.ok) throw classified(`中台 ${host} 接收失败（HTTP ${response.status}）`, response.status);
+    return await response.json();
   } catch (error) {
+    if (error instanceof AccessError || error instanceof TemporaryError) throw error;
     const cause = error as { message?: string; cause?: { code?: string; message?: string } };
     throw classified(
       `中台 ${host}：${cause.cause?.code ?? ""} ${cause.cause?.message ?? cause.message ?? String(error)}`,
     );
   }
-  if (!response.ok) throw classified(`中台 ${host} 接收失败（HTTP ${response.status}）`, response.status);
-  return response;
 }
