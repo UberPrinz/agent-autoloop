@@ -7,7 +7,7 @@ import { atomicFile, hash } from "../gitlab/storage.ts";
 import { scanGitlab } from "../gitlab/poll.ts";
 import { classify, collectMessages, handleRequest, type ReviewRequest, type Message } from "./review.ts";
 
-class AccessError extends Error {}
+import { AccessError, cliFailure, postEvent, diagnostic } from "../gitlab/errors.ts";
 
 // lark-cli forwards fractional seconds to an API that only accepts whole seconds.
 const larkTime = (at: number) => new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -56,14 +56,7 @@ export async function runFeishuReview(action: string, file: string) {
         { encoding: "utf8", timeout: 60_000, maxBuffer: 8 * 1024 * 1024 },
         (error, stdout, stderr) => {
           if (error) {
-            try {
-              const failure = JSON.parse(stderr);
-              if (failure.error?.type === "authorization" || failure.error?.type === "authentication") {
-                reject(new AccessError("飞书登录或消息权限需要恢复"));
-                return;
-              }
-            } catch {}
-            reject(new Error(`飞书命令失败：${args.slice(0, 2).join(" ")}；请检查登录与消息权限`));
+            reject(cliFailure(`飞书 ${args.slice(0, 2).join(" ")}`, error.code ?? null, stderr, stdout));
             return;
           }
           try {
@@ -161,7 +154,7 @@ export async function runFeishuReview(action: string, file: string) {
           continue;
         atomicFile(requestFile(request.id), JSON.stringify(request), true);
       }
-      const response = await fetch(`${config.hubUrl}/v1/events`, {
+      const response = await postEvent(`${config.hubUrl}/v1/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -238,7 +231,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         );
         return;
       }
-      console.error((error as Error).message);
+      console.error(diagnostic((error as Error).message));
       process.exitCode = 1;
     });
 }
