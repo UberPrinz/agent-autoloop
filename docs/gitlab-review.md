@@ -92,7 +92,7 @@ GitLab 审查卡片只展示 MR 链接、问题与影响摘要、建议和待发
 ```json
 {
   "url": "http://127.0.0.1:13000",
-  "worker": { "name": "review-server", "key": "REPLACE_WITH_WORKER_KEY", "capacity": 1 }
+  "worker": { "name": "review-server", "key": "REPLACE_WITH_WORKER_KEY", "capacity": 1, "loginShell": false }
 }
 ```
 
@@ -173,3 +173,5 @@ GitLab 审查只准备可信 main 工作目录，然后启动原生 Codex，发�
 GitLab 定时扫描和飞书消息扫描遇到连接拒绝、代理、DNS、超时、5xx 或 429 等临时故障时，本轮正常结束，下一次 cron 重试，不进入内核失败退避。健康记录按实例、配置和任务保存在 dataRoot 下各插件的 health 目录，包含首次失败时间、连续次数与最近的脱敏原因。持续 30 分钟才发送固定 key 通知，卡片未关闭时不重复；成功扫描后仅对本轮 open 中对应的通知提交恢复结案。游标仍须在中台确认所有消息后才推进。
 
 登录或权限问题沿用需要本人处理的提问；配置和程序错误保留诊断，不算临时网络故障。手动请求或审查任务不套用扫描的静默重试规则。执行前不满足 MR 准入条件是正常结论，人工与飞书请求会收到原因说明；发布期间的版本、权限和写入结果复核保持不变。
+
+远程 systemd Worker 推荐通过 `EnvironmentFile` 明确配置 PATH 和代理，并设置 `worker.loginShell: false`。省略开关继续使用登录 shell；macOS launchd 维持默认。环境文件示例见 [INSTALL](../INSTALL.md#接单程序的环境)。

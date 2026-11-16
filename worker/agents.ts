@@ -3,7 +3,8 @@
 // then the ones that ship. Anything with a print mode needs no file at all: `use: "command"` with a command line in
 // rules.json.
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { CONFIG_FILE, readConfig } from "../host/config.ts";
 import path from "node:path";
 import { loadPlugin } from "../host/plugins.ts";
 import type { Usage } from "../protocol/validate.ts";
@@ -48,9 +49,31 @@ export async function adapterFor(use: string): Promise<Adapter> {
 // Updates can briefly remove a program; caching that miss would fail every later run until restart.
 const found = new Map<string, string>();
 
-/** Where a program is: on the login shell's PATH (launchd and systemd start with a bare one), or in one of these. */
+/** The default preserves launchd's existing login-shell environment. */
+export function usesLoginShell(): boolean {
+  return !existsSync(CONFIG_FILE) || readConfig().worker?.loginShell !== false;
+}
+
+/** Resolve programs in the configured worker environment. */
 export function findProgram(name: string, elsewhere: () => string[] = () => []) {
-  let program = found.get(name);
+  const login = usesLoginShell();
+  const cacheKey = login ? name : `service:${process.env.PATH}:${name}`;
+  let program = found.get(cacheKey);
+  if (!login) {
+    program ??= (
+      name.includes("/") ? [name] : (process.env.PATH ?? "").split(path.delimiter).map((dir) => path.resolve(dir, name))
+    ).find((candidate) => {
+      try {
+        accessSync(candidate, constants.X_OK);
+        return statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+    if (!program) throw new Error(`找不到 ${name}：请在服务的 PATH 中安装并登录`);
+    found.set(cacheKey, program);
+    return program;
+  }
   if (!program) {
     const shell = process.env.SHELL ?? "/bin/sh";
     let onPath: string | null = null;
@@ -64,7 +87,7 @@ export function findProgram(name: string, elsewhere: () => string[] = () => []) 
     } catch {}
     program = onPath ?? elsewhere().find(existsSync);
     if (!program) throw new Error(`找不到 ${name}：先装好并登录`);
-    found.set(name, program);
+    found.set(cacheKey, program);
   }
   return program;
 }
