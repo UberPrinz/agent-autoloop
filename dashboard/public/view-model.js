@@ -88,22 +88,74 @@ export function safeLink(value) {
     return null;
   }
 }
+const IDENTITY = /^仓库：([^\r\n]+)\r?\nMR：!([1-9]\d*)\r?\nMR 标题：([^\r\n]+)\r?\n([^\r\n]+)$/;
+const MR_URL = /https?:\/\/[^\s<>"'`)\]]+?\/-\/merge_requests\/([1-9]\d*)(?!\d)/i;
+/** @param {string} text */
+function mergeRequestOf(text) {
+  const found = MR_URL.exec(text);
+  const href = found ? safeLink(found[0]) : null;
+  if (!found || !href) return null;
+  const url = new URL(href);
+  const path = url.pathname.slice(0, url.pathname.indexOf("/-/")).replace(/^\//, "");
+  return { key: `${url.origin}${url.pathname}`, href: `${url.origin}${url.pathname}`, number: found[1], path };
+}
 /** @param {State} state */
 export function buildOverviewModel(state) {
   const cards = state.cards
     .filter((card) => card.state === "open")
     .map((card) => {
-      const paragraph = card.text.trim().split(/\r?\n\s*\r?\n/, 1)[0];
+      const paragraphs = card.text.trim().split(/\r?\n\s*\r?\n/);
+      // Display only: chat-message IDs are noise in a list row; the detail pane keeps the full text.
+      const shown = paragraphs
+        .map((part) =>
+          part
+            .split(/\r?\n/)
+            .filter((line) => !/^(发起人|会话|消息)：/.test(line))
+            .join("\n"),
+        )
+        .filter((part) => part.trim());
+      const paragraph = shown[0] ?? paragraphs[0];
       const chars = [...paragraph];
-      const identity = /^仓库：([^\r\n]+)\r?\nMR：!([1-9]\d*)\r?\nMR 标题：([^\r\n]+)\r?\n([^\r\n]+)$/.exec(paragraph);
+      const identity = IDENTITY.exec(paragraph);
       const href = identity ? safeLink(identity[4]) : null;
       const reference =
         identity && href ? { label: identity[1] + " !" + identity[2] + "：" + identity[3], href } : null;
-      return { ...card, reference, preview: chars.length > 300 ? chars.slice(0, 300).join("") + "…" : paragraph };
+      const body = (identity ? shown.slice(1) : shown)[0] || "";
+      const flat = body.replace(/\s+/g, " ").trim();
+      const brief = [...flat].length > 120 ? [...flat].slice(0, 120).join("") + "…" : flat;
+      return {
+        ...card,
+        reference,
+        brief,
+        mr: mergeRequestOf(card.text),
+        identity,
+        preview: chars.length > 300 ? chars.slice(0, 300).join("") + "…" : paragraph,
+      };
     });
+  /** @type {Map<string,{key:string,label:string,href:string|null,cards:typeof cards}>} */
+  const byKey = new Map();
+  for (const card of cards) {
+    const key = card.mr?.key ?? "other";
+    if (!byKey.has(key)) byKey.set(key, { key, label: "其他", href: card.mr?.href ?? null, cards: [] });
+    /** @type {NonNullable<ReturnType<typeof byKey.get>>} */ (byKey.get(key)).cards.push(card);
+  }
+  const newest = /** @param {{createdAt:string,id:number}} card */ (card) => [Date.parse(card.createdAt), card.id];
+  /** @param {{createdAt:string,id:number}} a @param {{createdAt:string,id:number}} b */
+  const byNewest = (a, b) => newest(b)[0] - newest(a)[0] || b.id - a.id;
+  const groups = [...byKey.values()];
+  for (const group of groups) {
+    group.cards.sort(byNewest);
+    const first = group.cards[0];
+    if (group.key === "other") continue;
+    const named = group.cards.find((card) => card.identity && card.identity[2] === card.mr?.number);
+    group.label = named?.reference ? named.reference.label : `${first.mr?.path || group.key} !${first.mr?.number}`;
+  }
+  groups.sort((a, b) => byNewest(a.cards[0], b.cards[0]));
+  const ordered = groups.flatMap((group) => group.cards);
   return {
-    cards,
-    waiting: cards.length,
+    cards: ordered,
+    groups,
+    waiting: ordered.length,
     running: state.totals.running,
     doneToday: state.totals.doneToday,
     timezone: state.timezone,

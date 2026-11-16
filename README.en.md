@@ -16,7 +16,7 @@ Most of us use command-line agents like Claude Code or Codex by babysitting a te
 
 - **One machine, one install command.** Runs on your Mac or Linux machine. No cloud server or inbound ports required.
 - **Connect a new agent in one line.** No SDK, no agent source code to fork. Any CLI tool that takes a prompt and prints a final reply can plug in.
-- **Local dashboard and decisions.** Run `agent-autoloop dashboard` and open the printed local URL. View totals, pending cards and schedules; choose an original answer or acknowledge a notice. Channels and the CLI remain available.
+- **Local dashboard and decisions.** Run `agent-autoloop dashboard` and open the printed local URL. Pending cards are listed on the left, grouped by merge request, with details and a pinned action area on the right; totals sit in one top line and schedules stay read-only below the list. Choose an original answer or acknowledge a notice. Channels and the CLI remain available.
 
 ## Get started
 

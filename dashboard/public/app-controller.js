@@ -1,7 +1,7 @@
 import { createApi, ApiError } from "./api.js";
 import { buildOverviewModel, safeLink, time } from "./view-model.js";
 /** @typedef {import('../src/types.ts').Card} Card */
-/** @typedef {{choice:number|null,pending:boolean,message:string,uncertain:boolean,reconciled:boolean}} Action */
+/** @typedef {{choice:number|null,pending:boolean,message:string,uncertain:boolean,reconciled:boolean }} Action */
 /** @param {{document:Document,fetchImpl?:typeof fetch,setTimer?:(fn:()=>void,ms:number)=>any,clearTimer?:(handle:any)=>void,interval?:number}} options */
 export function startDashboardApp({
   document,
@@ -19,7 +19,8 @@ export function startDashboardApp({
   /** @type {Map<number,boolean>} */ const expanded = new Map();
   let generation = 0,
     reloadRequired = false,
-    disposed = false;
+    disposed = false,
+    noticeText = "";
   /** @type {Promise<void>|null} */ let pendingRead = null;
   /** @type {any} */ let timer = null;
   let lastSuccess = "",
@@ -31,7 +32,13 @@ export function startDashboardApp({
   };
   /** @param {number} id */ function action(id) {
     if (!actions.has(id))
-      actions.set(id, { choice: null, pending: false, message: "", uncertain: false, reconciled: false });
+      actions.set(id, {
+        choice: null,
+        pending: false,
+        message: "",
+        uncertain: false,
+        reconciled: false,
+      });
     return /** @type {Action} */ (actions.get(id));
   }
   /** @param {string} tag @param {string} [text] @param {string} [className] */
@@ -41,13 +48,25 @@ export function startDashboardApp({
     if (className) node.className = className;
     return node;
   }
-  /** @param {string} text @param {()=>void} click */
-  function button(text, click) {
+  /** @param {string} text @param {()=>void} click @param {string} [id] */
+  function button(text, click, id) {
     const node = document.createElement("button");
     node.type = "button";
     node.textContent = text;
+    if (id) node.id = id;
     node.addEventListener("click", click);
     return node;
+  }
+  /** @param {any} node @param {string} text */
+  function setText(node, text) {
+    if (node.textContent !== text) node.textContent = text;
+  }
+  /** Reorders without recreating nodes, so focus and scroll survive a refresh. @param {any} parent @param {any[]} wanted */
+  function sync(parent, wanted) {
+    wanted.forEach((node, index) => {
+      if (parent.children[index] !== node) parent.insertBefore(node, parent.children[index] || null);
+    });
+    while (parent.children.length > wanted.length) parent.children[parent.children.length - 1].remove();
   }
   function model() {
     return snapshot
@@ -62,42 +81,97 @@ export function startDashboardApp({
     );
   }
   /** @type {Card|null} */ let detailCard = null;
+  /** @param {Card|null} card @param {Action|null} item */
+  function canAct(card, item) {
+    return !!(
+      card &&
+      item &&
+      card.state === "open" &&
+      !handled.has(card.id) &&
+      !reloadRequired &&
+      !item.pending &&
+      (!item.uncertain || item.reconciled)
+    );
+  }
   function getView() {
     const item = opened === null ? null : action(opened),
-      card = currentCard();
+      card = currentCard(),
+      m = model();
     return {
-      model: model(),
+      model: m,
+      opened,
       selection: item?.choice ?? null,
       message: item?.message || "",
+      notice: noticeText,
       reloadRequired,
+      groups: m
+        ? m.groups.map((group) => ({ key: group.key, label: group.label, ids: group.cards.map((c) => c.id) }))
+        : [],
       canSubmit: !!(
+        canAct(card, item) &&
         card &&
-        card.state === "open" &&
-        !handled.has(card.id) &&
-        !reloadRequired &&
-        !item?.pending &&
-        (!item?.uncertain || item.reconciled) &&
         ["ask", "notice"].includes(card.kind) &&
         card.options.length &&
         (card.kind === "notice" || item?.choice !== null)
       ),
     };
   }
+  function pane() {
+    return opened !== null ? "card" : "none";
+  }
+  /** @type {string|null} */ let detailSignature = null;
+  function signature() {
+    const card = currentCard() || detailCard,
+      item = opened === null ? null : action(opened);
+    return JSON.stringify([
+      pane(),
+      opened,
+      card && [
+        card.id,
+        card.version,
+        card.state,
+        card.title,
+        card.text,
+        card.options,
+        card.recommend,
+        card.kind,
+        card.link,
+        card.rule,
+      ],
+      item && [item.choice, item.pending, item.message, item.uncertain, item.reconciled],
+      handled.has(opened ?? -1),
+      reloadRequired,
+      snapshot?.timezone,
+    ]);
+  }
   function renderDetail() {
-    const focus = document.activeElement?.id;
+    const mode = pane();
+    const layout = root("layout");
+    const className = mode === "none" ? "layout" : "layout show-detail";
+    if (layout.className !== className) layout.className = className;
     const detail = root("detail");
-    detail.hidden = opened === null;
+    root("detail-empty").hidden = mode !== "none";
+    detail.hidden = mode === "none";
+    const sig = signature();
+    if (sig === detailSignature) return;
+    detailSignature = sig;
+    const focus = document.activeElement?.id;
     detail.replaceChildren();
+    if (mode === "none") return;
+    renderCardPane(detail);
+    if (focus) {
+      const again = document.getElementById(focus);
+      again?.focus({ preventScroll: true });
+    }
+  }
+  /** @param {any} detail */
+  function renderCardPane(detail) {
     if (opened === null) return;
     const card = currentCard() || detailCard,
       item = action(opened);
     if (!card) return;
-    const close = button("关闭详情", () => {
-      opened = null;
-      renderDetail();
-      document.getElementById(`open-card-${card.id}`)?.focus({ preventScroll: true });
-    });
-    close.id = `close-card-${card.id}`;
+    const close = button("返回", back, `close-card-${card.id}`);
+    close.className = "back";
     detail.append(
       close,
       el("h2", card.title),
@@ -124,6 +198,7 @@ export function startDashboardApp({
       anchor.textContent = "查看相关链接";
       detail.append(anchor);
     }
+    const dock = el("div", undefined, "dock");
     const controls = document.createElement("fieldset");
     const view = getView();
     controls.disabled =
@@ -160,18 +235,135 @@ export function startDashboardApp({
         () => {
           void submit();
         },
+        `submit-${card.id}`,
       );
-      submitButton.id = `submit-${card.id}`;
       submitButton.disabled = !view.canSubmit;
       submitButton.className = "primary";
       controls.append(submitButton);
     }
-    detail.append(controls);
+    dock.append(controls);
     const message = el("p", reloadRequired ? "看板已重启，请重新加载页面后操作" : item.message, "decision");
     message.setAttribute("role", "status");
     message.setAttribute("aria-live", "polite");
-    detail.append(message);
-    if (focus) document.getElementById(focus)?.focus({ preventScroll: true });
+    dock.append(message);
+    detail.append(dock);
+  }
+  /** @type {Map<number,{node:any,open:any,meta:any,text:any}>} */ const rows = new Map();
+  /** @type {Map<string,{node:any,title:any,label:any,count:any,list:any,href:string|null,text:string}>} */ const groups =
+    new Map();
+  /** @type {{heading:any,empty:any,box:any}|null} */ let shell = null;
+  function ensureShell() {
+    if (shell) return shell;
+    const waiting = root("waiting");
+    const heading = el("h2", undefined, "panel-head");
+    const count = el("span", "", "count");
+    heading.append(el("span", "待我处理", "tag"), count);
+    const empty = el("p", "暂时没有需要你处理的事项", "empty");
+    const box = el("div", undefined, "groups");
+    waiting.replaceChildren(heading, el("div", undefined, "ruler"), empty, box);
+    shell = { heading: count, empty, box };
+    return shell;
+  }
+  /** @param {any} card @param {string} timezone */
+  function rowFor(card, timezone) {
+    let row = rows.get(card.id);
+    if (!row) {
+      const node = el("article", undefined, "entry");
+      const id = card.id;
+      const open = button("", () => openCard(id), `open-card-${id}`);
+      const meta = el("span", "", "meta");
+      const text = el("p", "", "card-preview");
+      const dot = el("span", undefined, `dot ${card.kind === "notice" ? "notice" : "ask"}`);
+      node.append(dot, open, meta, text);
+      row = { node, open, meta, text };
+      rows.set(card.id, row);
+    }
+    setText(row.open, card.title);
+    setText(
+      row.meta,
+      `${card.rule || (card.kind === "notice" ? "系统通知" : "未关联规则")} · ${time(card.createdAt, timezone)}`,
+    );
+    setText(row.text, (card.mr ? card.brief : card.preview) || "");
+    row.text.hidden = !row.text.textContent;
+    const className = opened === card.id && pane() === "card" ? "entry current" : "entry";
+    if (row.node.className !== className) row.node.className = className;
+    return row;
+  }
+  /** @param {ReturnType<typeof buildOverviewModel>["groups"][number]} group */
+  function groupFor(group) {
+    let ui = groups.get(group.key);
+    if (!ui) {
+      const node = el("section", undefined, "group");
+      const title = el("h3", undefined, "group-title");
+      const count = el("span", "", "meta");
+      const list = el("div", undefined, "group-list");
+      node.append(title, count, list);
+      ui = { node, title, label: null, count, list, href: null, text: "" };
+      groups.set(group.key, ui);
+    }
+    if (!ui.label || ui.href !== group.href || ui.text !== group.label) {
+      if (ui.label && ui.href === group.href) setText(ui.label, group.label);
+      else {
+        let label;
+        if (group.href) {
+          label = document.createElement("a");
+          label.id = `reference-group-${group.key}`;
+          label.href = group.href;
+          label.target = "_blank";
+          label.rel = "noopener noreferrer";
+          label.textContent = group.label;
+        } else label = el("span", group.label);
+        ui.title.replaceChildren(label);
+        ui.label = label;
+      }
+      ui.href = group.href;
+      ui.text = group.label;
+    }
+    setText(ui.count, `${group.cards.length} 张`);
+    return ui;
+  }
+  /** @param {ReturnType<typeof buildOverviewModel>} m */
+  function renderList(m) {
+    const ui = ensureShell();
+    setText(ui.heading, `${m.waiting} 张`);
+    ui.empty.hidden = m.waiting > 0;
+    const liveIds = new Set(m.cards.map((card) => card.id));
+    for (const id of [...rows.keys()]) if (!liveIds.has(id)) rows.delete(id);
+    const liveKeys = new Set(m.groups.map((group) => group.key));
+    for (const key of [...groups.keys()]) if (!liveKeys.has(key)) groups.delete(key);
+    const wanted = [];
+    for (const group of m.groups) {
+      const g = groupFor(group);
+      sync(
+        g.list,
+        group.cards.map((card) => rowFor(card, m.timezone).node),
+      );
+      wanted.push(g.node);
+    }
+    sync(ui.box, wanted);
+  }
+  let scheduledSignature = "";
+  /** @param {ReturnType<typeof buildOverviewModel>} m */
+  function renderScheduled(m) {
+    const sig = JSON.stringify([m.timezone, m.scheduled]);
+    if (sig === scheduledSignature) return;
+    scheduledSignature = sig;
+    const scheduled = root("scheduled");
+    scheduled.replaceChildren(
+      el("summary", `定时任务 · ${m.scheduled.length}`),
+      el("p", `计划时间 · ${m.timezone}；实际执行可能排队`, "meta"),
+    );
+    if (!m.scheduled.length) scheduled.append(el("p", "暂无定时任务", "empty"));
+    for (const task of m.scheduled) {
+      const row = el("article", undefined, "task");
+      row.append(
+        el("h3", task.name),
+        el("p", `${task.key} · ${task.every}`, "meta"),
+        el("p", `下次计划：${task.next}`),
+        el("p", task.status, "meta"),
+      );
+      scheduled.append(row);
+    }
   }
   function render() {
     const focus = document.activeElement?.id;
@@ -185,61 +377,14 @@ export function startDashboardApp({
           ? `最后更新 ${lastSuccess}`
           : "正在读取…";
     root("status").className = error || reloadRequired ? "status-error" : "status-ok";
+    setText(root("notice"), noticeText);
     if (m) {
-      const summary = root("summary");
-      summary.replaceChildren();
-      for (const [label, value] of [
-        ["待我处理", m.waiting],
-        ["正在运行", m.running],
-        ["今日完成轮次", m.doneToday],
-      ]) {
-        const node = el("div", undefined, "stat");
-        node.append(el("span", String(value), "stat-value"), el("span", String(label)));
-        summary.append(node);
-      }
-      const waiting = root("waiting");
-      waiting.replaceChildren(el("h2", `待我处理 · ${m.waiting}`));
-      if (!m.cards.length) waiting.append(el("p", "暂时没有需要你处理的事项", "empty"));
-      for (const card of m.cards) {
-        const row = el("article", undefined, "entry");
-        const openButton = button(card.title, () => open(card.id));
-        openButton.id = `open-card-${card.id}`;
-        row.append(
-          openButton,
-          el(
-            "span",
-            `${card.rule || (card.kind === "notice" ? "系统通知" : "未关联规则")} · ${time(card.createdAt, m.timezone)}`,
-            "meta",
-          ),
-        );
-        if (card.reference) {
-          const reference = document.createElement("a");
-          reference.id = `reference-${card.id}`;
-          reference.className = "card-reference";
-          reference.textContent = card.reference.label;
-          reference.href = card.reference.href;
-          reference.target = "_blank";
-          reference.rel = "noopener noreferrer";
-          row.append(reference);
-        } else if (card.preview) row.append(el("p", card.preview, "card-preview"));
-        waiting.append(row);
-      }
-      const scheduled = root("scheduled");
-      scheduled.replaceChildren(el("h2", "定时任务"), el("p", `计划时间 · ${m.timezone}；实际执行可能排队`, "meta"));
-      if (!m.scheduled.length) scheduled.append(el("p", "暂无定时任务", "empty"));
-      for (const task of m.scheduled) {
-        const row = el("article", undefined, "entry");
-        row.append(
-          el("h3", task.name),
-          el("p", `${task.key} · ${task.every}`, "meta"),
-          el("p", `下次计划：${task.next}`),
-          el("p", task.status, "meta"),
-        );
-        scheduled.append(row);
-      }
+      setText(root("summary"), `待处理 ${m.waiting} · 在跑 ${m.running} · 今日完成 ${m.doneToday}`);
+      renderList(m);
+      renderScheduled(m);
     }
     renderDetail();
-    if (focus) document.getElementById(focus)?.focus({ preventScroll: true });
+    if (focus && document.activeElement?.id !== focus) document.getElementById(focus)?.focus({ preventScroll: true });
   }
   function reconcile() {
     if (!snapshot) return;
@@ -294,7 +439,12 @@ export function startDashboardApp({
     if (!card) return;
     opened = id;
     detailCard = card;
-    renderDetail();
+    render();
+  }
+  const openCard = open;
+  function back() {
+    opened = null;
+    render();
   }
   /** @param {number} choice */ function choose(choice) {
     if (opened === null) return;
@@ -312,26 +462,34 @@ export function startDashboardApp({
     item.choice = choice;
     renderDetail();
   }
-  async function submit() {
-    if (opened === null || !instance || !getView().canSubmit) return;
-    const id = opened,
-      item = action(id),
+  /** @param {number} id Card shown after id is handled: the one below it, else the one above. */
+  function nextAfter(id) {
+    const order = (model()?.cards || []).map((card) => card.id);
+    const at = order.indexOf(id);
+    return order[at + 1] ?? order[at - 1] ?? null;
+  }
+  /** @param {number} id @param {()=>Promise<{changed:boolean}>} call @param {(changed:boolean)=>string} done */
+  async function send(id, call, done) {
+    const item = action(id),
       card = currentCard();
     if (!card) return;
     item.pending = true;
     item.message = "正在提交…";
+    noticeText = "";
     generation++;
     pendingRead = null;
-    renderDetail();
+    render();
     try {
-      const result = await api.answer(id, card.kind === "notice" ? 0 : /** @type {number} */ (item.choice), instance);
+      const result = await call();
+      const next = opened === id ? nextAfter(id) : null;
       handled.add(id);
       item.uncertain = false;
-      item.message = result.changed
-        ? card.kind === "notice"
-          ? "通知已处理"
-          : "决定已提交"
-        : "此卡片已被处理，本次未更改";
+      item.message = done(result.changed);
+      noticeText = `${item.message}：${card.title}`;
+      if (next !== null) {
+        opened = next;
+        detailCard = snapshot?.cards.find((c) => c.id === next) || null;
+      }
     } catch (err) {
       const code = err instanceof ApiError ? err.code : "OUTCOME_UNKNOWN";
       if (code === "PAGE_RELOAD_REQUIRED") reloadRequired = true;
@@ -345,6 +503,19 @@ export function startDashboardApp({
       render();
       await refresh();
     }
+  }
+  async function submit() {
+    if (opened === null || !instance || !getView().canSubmit) return;
+    const id = opened,
+      item = action(id),
+      card = currentCard(),
+      key = instance;
+    if (!card) return;
+    await send(
+      id,
+      () => api.answer(id, card.kind === "notice" ? 0 : /** @type {number} */ (item.choice), key),
+      (changed) => (changed ? (card.kind === "notice" ? "通知已处理" : "决定已提交") : "此卡片已被处理，本次未更改"),
+    );
   }
   function schedule() {
     if (timer !== null) clearTimer(timer);
@@ -370,6 +541,7 @@ export function startDashboardApp({
     ready,
     refresh,
     open,
+    back,
     choose,
     submit,
     getView,
