@@ -40,13 +40,16 @@ export function classify(message: Message, context: Message[], policy: Policy): 
   if (message.chat_type !== "p2p" && !(message.chat_type === "group" && mentions.some((m) => m.id === policy.user)))
     return null;
   const text = message.content;
-  const review = /\breview\b|\bcr\b|审查|审一下|审下|帮.{0,6}看(?:一下|下)|麻烦.{0,6}看(?:一下|下)/i.test(text);
+  const id = hash(canonical({ user: policy.user, instance: policy.instanceUrl, message: message.message_id }));
+  // A numbered MR link of a configured project is the request; wording never decides.
   const direct = targets(text, policy);
-  if (!review && !direct.length) return null;
+  if (direct.length) return { id, message, urls: direct, automatic: true };
+  const review = /\breview\b|\bcr\b|审查|审一下|审下|帮.{0,6}看(?:一下|下)|麻烦.{0,6}看(?:一下|下)/i.test(text);
+  if (!review) return null;
   const preceding = context.filter(
     (m) => !m.deleted && m.chat_id === message.chat_id && m.sender?.id === message.sender.id,
   );
-  const urls = direct.length ? direct : [...new Set(preceding.flatMap((m) => targets(m.content, policy)))];
+  const urls = [...new Set(preceding.flatMap((m) => targets(m.content, policy)))];
   const request =
     /(?:帮(?:我|忙)?|麻烦|请|劳烦).{0,16}(?:review\b|cr\b|审查|审一下|审下|看一下|看下)|(?:can|could|would)\s+you\s+(?:please\s+)?review/i.test(
       text,
@@ -56,12 +59,7 @@ export function classify(message: Message, context: Message[], policy: Policy): 
       text,
     );
   const automatic = review && request && !uncertain && urls.length === 1 && mentions.every((m) => m.id === policy.user);
-  return {
-    id: hash(canonical({ user: policy.user, instance: policy.instanceUrl, message: message.message_id })),
-    message,
-    urls,
-    automatic,
-  };
+  return { id, message, urls, automatic };
 }
 export async function collectMessages(call: (args: string[]) => Promise<any>, args: string[]): Promise<Message[]> {
   const messages: Message[] = [];
@@ -86,51 +84,75 @@ export async function collectMessages(call: (args: string[]) => Promise<any>, ar
   } while (token);
   return messages;
 }
-type Answer = { about: string; choice: number | null; text?: string | null };
+type Answer = { about: string; choice: number | null; text?: string | null; options?: string[] };
+export type Later = { key: string; readyAt: number; url: string };
+export type Outcome = "delivered" | "closed" | "open";
+// Option labels name the MR, so an answer still means the same MR after other MRs were delivered meanwhile.
+export const optionLabel = (url: string) => {
+  const match = /^https?:\/\/[^/]+\/(.+)\/-\/merge_requests\/(\d+)$/.exec(url.split(/[?#]/)[0]);
+  return `审查 ${match ? `${match[1]}!${match[2]}` : url}`.slice(0, 80);
+};
 export async function handleRequest(
   request: ReviewRequest,
   answers: Answer[],
-  submit: (url: string) => Promise<void>,
+  submit: (url: string) => Promise<Later | void>,
   policy?: Policy,
+  probe?: (url: string) => Promise<Outcome>,
 ) {
   const ask: { key: string; title: string; text: string; options: string[]; about: string }[] = [];
+  const later: Later[] = [];
+  const start = async (url: string) => {
+    const wait = await submit(url);
+    if (wait) later.push(wait);
+  };
   const answer = answers.find((a) => a.about === request.id);
-  if (answer?.choice === 1 || (answer?.choice === 0 && request.urls.length !== 1)) return { ask };
+  if (answer?.choice === 1 || (answer?.choice === 0 && request.urls.length !== 1)) return { ask, later };
   if (answer?.choice === null && answer.text && policy) {
     const urls = targets(answer.text, policy);
     if (urls.length === 1) {
-      await submit(urls[0]);
-      return { ask };
+      await start(urls[0]);
+      return { ask, later };
     }
   }
-  if ((request.automatic && !answer) || (answer?.choice === 0 && request.urls.length === 1)) {
-    for (const url of request.urls) await submit(url);
-    return { ask };
+  if (answer?.choice === 0 && request.urls.length === 1) {
+    await start(request.urls[0]);
+    return { ask, later };
   }
   // Only owner answers may select targets; chat text never changes commands or execution policy.
-  if (
-    answer &&
-    answer.choice !== null &&
-    answer.choice >= 2 &&
-    request.urls.length <= 3 &&
-    request.urls[answer.choice - 2]
-  ) {
-    await submit(request.urls[answer.choice - 2]);
-    return { ask };
+  if (answer && answer.choice !== null && answer.choice >= 2) {
+    const picked =
+      request.urls.find((url) => optionLabel(url) === answer.options?.[answer.choice!]) ??
+      (answer.options?.[answer.choice] === undefined || /^审查第 \d+ 个 MR$/.test(answer.options[answer.choice])
+        ? request.urls[answer.choice - 2]
+        : undefined);
+    if (picked) {
+      await start(picked);
+      return { ask, later };
+    }
+  }
+  let urls = request.urls;
+  if (request.automatic && !answer) {
+    // A version that was already delivered, by the scan or by an earlier message, needs nothing more.
+    if (urls.length > 1 && probe) {
+      const open: string[] = [];
+      for (const url of urls) if ((await probe(url)) === "open") open.push(url);
+      urls = open;
+    }
+    if (!urls.length) return { ask, later };
+    if (urls.length === 1) {
+      await start(urls[0]);
+      return { ask, later };
+    }
   }
   ask.push({
     key: `feishu-review:${request.id}`,
     title: "这条消息需要我审查吗？",
-    text: `发起人：${request.message.sender.id}\n会话：${request.message.chat_id}\n消息：${request.message.message_id}\n${request.message.content.slice(0, 2000)}\n${request.urls.join("\n").slice(0, 1400)}\n${request.urls.length ? "确认后按现有审查与发布规则处理；也可用命令行 answer 回复一个 MR 链接。" : "未找到明确的已配置 MR 链接；可用命令行 answer 回复一个 MR 链接，或忽略。"}`,
+    text: `发起人：${request.message.sender.id}\n会话：${request.message.chat_id}\n消息：${request.message.message_id}\n${request.message.content.slice(0, 2000)}\n${urls.join("\n").slice(0, 1400)}\n${urls.length ? "确认后按现有审查与发布规则处理；也可用命令行 answer 回复一个 MR 链接。" : "未找到明确的已配置 MR 链接；可用命令行 answer 回复一个 MR 链接，或忽略。"}`,
     options:
-      request.urls.length === 1
+      urls.length === 1
         ? ["开始审查", "忽略"]
-        : [
-            "我来处理",
-            "忽略",
-            ...(request.urls.length <= 3 ? request.urls.map((_, i) => `审查第 ${i + 1} 个 MR`) : []),
-          ],
+        : ["我来处理", "忽略", ...(urls.length <= 3 ? urls.map((url) => optionLabel(url)) : [])],
     about: request.id,
   });
-  return { ask };
+  return { ask, later };
 }

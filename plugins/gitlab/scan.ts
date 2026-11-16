@@ -1,6 +1,7 @@
 import { eligible } from "./ci.ts";
 import { nextObservation } from "./request.ts";
-type Config = { instanceKey: string; instanceUrl: string; reviewerId: number };
+import { readyAt, type IntervalStore } from "./interval.ts";
+type Config = { instanceKey: string; instanceUrl: string; reviewerId: number; minIntervalMinutes?: number };
 type Project = Pick<import("./config.ts").Project, "id" | "ciMode">;
 type Record = ReturnType<typeof nextObservation> & {
   delivered?: boolean;
@@ -10,6 +11,8 @@ type Record = ReturnType<typeof nextObservation> & {
 };
 type IO = {
   retryUnrouted?: boolean;
+  now?: () => number;
+  interval?: IntervalStore;
   eligible?: (mr: any) => Promise<boolean>;
   list: () => Promise<any[]>;
   read: (iid: number) => Record | undefined;
@@ -24,6 +27,8 @@ export async function scanProject(
   io: IO,
 ): Promise<void> {
   if (!/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)+$/.test(path)) throw new Error("项目路径无效");
+  const minutes = config.minIntervalMinutes ?? 0;
+  if (minutes > 0 && !io.interval) throw new Error("缺少派发时间的状态存储");
   const mrs = await io.list();
   for (const mr of mrs) {
     if (!Number.isSafeInteger(mr.iid) || mr.iid <= 0) throw new Error("MR 编号无效");
@@ -37,6 +42,9 @@ export async function scanProject(
       before.headSha === mr.sha
     )
       continue;
+    // Inside the interval nothing is recorded, so the current head goes out on the first scan after it.
+    const now = io.now ?? Date.now;
+    if (minutes > 0 && now() < readyAt(io.interval!, mr.iid, minutes)) continue;
     const value = {
       instanceKey: config.instanceKey,
       projectId: project.id,
@@ -93,5 +101,6 @@ export async function scanProject(
       throw new Error("项目规则未路由");
     }
     io.write({ ...record, delivered: true });
+    io.interval?.write(mr.iid, { lastDispatchedAt: now() });
   }
 }

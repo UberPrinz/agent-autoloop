@@ -12,35 +12,49 @@ const message = (content: string, extra = {}) => ({
   content,
   ...extra,
 });
-test("explicit direct requests enter review; ambiguous and negative language never auto authorizes", () => {
-  assert.equal(classify(message(`帮我 review 一下 ${url}`), [], policy)?.automatic, true);
+test("a numbered MR link alone starts a review whatever the wording; no-link messages keep the keyword rules", () => {
+  // Guards against wording filters (keywords, negations, extra mentions) silently dropping a plain MR link request.
   for (const text of [
     `${url}`,
+    `帮我 review 一下 ${url}`,
     `这个 review 过了吗 ${url}`,
-    `请问你帮我 review 完了吗 ${url}`,
-    `我帮你 review ${url}`,
     `不用你 review ${url}`,
-    `他说帮我 review ${url}`,
     `帮我 review ${url} https://gitlab.example.com/team/repo/-/merge_requests/8`,
-  ])
-    assert.equal(classify(message(text), [], policy)?.automatic, false);
+  ]) {
+    const request = classify(message(text), [], policy);
+    assert.equal(request?.automatic, true, text);
+    assert.ok(request!.urls.length >= 1);
+  }
+  assert.deepEqual(classify(message(`看看 ${url} 和 ${url}`), [], policy)?.urls, [url]);
+  // The new-MR page and other projects are not numbered MRs of a configured project.
+  assert.equal(classify(message("https://gitlab.example.com/team/repo/-/merge_requests/new"), [], policy), null);
+  assert.equal(classify(message("https://gitlab.example.com/other/repo/-/merge_requests/7"), [], policy), null);
+  // Messages without a link keep the old wording rules.
   assert.equal(classify(message("午饭吃什么"), [], policy), null);
+  assert.equal(classify(message("帮我 review 一下"), [message(url)], policy)?.automatic, true);
+  assert.equal(classify(message("不用你 review"), [message(url)], policy)?.automatic, false);
+  assert.equal(classify(message("我帮你 review"), [message(url)], policy)?.automatic, false);
+  assert.equal(classify(message("帮我 review"), [], policy)?.automatic, false);
   assert.equal(classify(message(`帮我 review ${url}`, { sender: { id: "ou_me" } }), [], policy), null);
   assert.equal(classify(message(`帮我 review ${url}`, { deleted: true }), [], policy), null);
 });
-test("group requests require an actual owner mention; multiple recipients are ambiguous", () => {
+test("group requests need an actual owner mention; other mentions no longer block an MR link", () => {
+  assert.equal(classify(message(url, { chat_type: "group", mentions: [{ id: "ou_other" }] }), [], policy), null);
+  assert.equal(classify(message(url, { chat_type: "group" }), [], policy), null);
   assert.equal(
-    classify(message(`帮忙 review ${url}`, { chat_type: "group", mentions: [{ id: "ou_other" }] }), [], policy),
-    null,
-  );
-  assert.equal(
-    classify(message(`帮忙 review ${url}`, { chat_type: "group", mentions: [{ id: "ou_me" }] }), [], policy)?.automatic,
+    classify(message(url, { chat_type: "group", mentions: [{ id: "ou_me" }] }), [], policy)?.automatic,
     true,
   );
   assert.equal(
+    classify(message(url, { chat_type: "group", mentions: [{ id: "ou_me" }, { id: "ou_other" }] }), [], policy)
+      ?.automatic,
+    true,
+  );
+  // Without a link, extra recipients still make a context-only request ambiguous.
+  assert.equal(
     classify(
-      message(`帮忙 review ${url}`, { chat_type: "group", mentions: [{ id: "ou_me" }, { id: "ou_other" }] }),
-      [],
+      message("帮忙 review", { chat_type: "group", mentions: [{ id: "ou_me" }, { id: "ou_other" }] }),
+      [message(url)],
       policy,
     )?.automatic,
     false,
@@ -114,4 +128,62 @@ test("many targets remain within card limits; an owner can supply a missing conf
     assert.fail("no target"),
   );
   assert.equal(handled.ask.length, 0);
+});
+
+const mrUrl = (n: number) => `https://gitlab.example.com/team/repo/-/merge_requests/${n}`;
+const linked = (...urls: string[]) => ({
+  id: "c".repeat(64),
+  message: message(urls.join(" ")),
+  urls,
+  automatic: true,
+});
+test("a link message with one MR starts it without a card, and an unsettled head becomes a keyed wait", async () => {
+  // Guards against a card for an unambiguous link, or a dropped request when the head is still settling.
+  const request = linked(url);
+  const submitted: string[] = [];
+  const done = await handleRequest(request, [], async (target) => {
+    submitted.push(target);
+  });
+  assert.deepEqual(submitted, [url]);
+  assert.deepEqual(done, { ask: [], later: [] });
+  const wait = { key: "feishu-review:mr:42:7", readyAt: 1_000, url };
+  const waiting = await handleRequest(request, [], async () => wait);
+  assert.deepEqual(waiting, { ask: [], later: [wait] });
+});
+test("MRs already delivered drop out before deciding between auto start and one card", async () => {
+  // Guards against asking about an MR whose version was already reviewed, or ignoring the one that still needs it.
+  const state: Record<string, "delivered" | "closed" | "open"> = {
+    [mrUrl(1)]: "delivered",
+    [mrUrl(2)]: "open",
+    [mrUrl(3)]: "closed",
+  };
+  const probe = async (target: string) => state[target];
+  const submitted: string[] = [];
+  const submit = async (target: string) => {
+    submitted.push(target);
+  };
+  const one = await handleRequest(linked(mrUrl(1), mrUrl(2), mrUrl(3)), [], submit, policy, probe);
+  assert.deepEqual(submitted, [mrUrl(2)]);
+  assert.equal(one.ask.length, 0);
+  submitted.length = 0;
+  const none = await handleRequest(linked(mrUrl(1), mrUrl(3)), [], submit, policy, probe);
+  assert.equal(submitted.length + none.ask.length, 0);
+  state[mrUrl(3)] = "open";
+  const several = await handleRequest(linked(mrUrl(1), mrUrl(2), mrUrl(3)), [], submit, policy, probe);
+  assert.equal(submitted.length, 0);
+  assert.equal(several.ask.length, 1);
+  assert.deepEqual(several.ask[0].options, ["我来处理", "忽略", "审查 team/repo!2", "审查 team/repo!3"]);
+});
+test("an answer picks the MR its option names, even after another MR was delivered meanwhile", async () => {
+  // Guards against index drift: option 2 meant MR 2 when the card was shown, and must not become MR 3 later.
+  const request = linked(mrUrl(1), mrUrl(2), mrUrl(3));
+  const submitted: string[] = [];
+  await handleRequest(
+    request,
+    [{ about: request.id, choice: 2, options: ["我来处理", "忽略", "审查 team/repo!2", "审查 team/repo!3"] }],
+    async (target) => {
+      submitted.push(target);
+    },
+  );
+  assert.deepEqual(submitted, [mrUrl(2)]);
 });

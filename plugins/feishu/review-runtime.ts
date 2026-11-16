@@ -6,7 +6,8 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "../gitlab/config.ts";
 import { atomicFile, hash } from "../gitlab/storage.ts";
 import { scanGitlab } from "../gitlab/poll.ts";
-import { classify, collectMessages, handleRequest, type ReviewRequest, type Message } from "./review.ts";
+import { manualTarget } from "../gitlab/manual.ts";
+import { classify, collectMessages, handleRequest, type Later, type ReviewRequest, type Message } from "./review.ts";
 
 import { AccessError, cliFailure, postEvent, diagnostic } from "../gitlab/errors.ts";
 
@@ -203,39 +204,79 @@ export async function runFeishuReview(action: string, file: string) {
     ids.add(event.subject);
   }
   for (const answer of context.answers) ids.add(answer.about);
+  // A woken timer names the request and the MR it was waiting for; only MRs saved in that request are used.
+  const wakes: { id: string; url: string }[] = [];
+  for (const timer of context.timers ?? []) {
+    if (!/^feishu-review:mr:\d+:\d+$/.test(timer.key)) continue;
+    try {
+      const about = JSON.parse(timer.about);
+      if (/^[a-f0-9]{64}$/.test(about.request) && typeof about.url === "string")
+        wakes.push({ id: about.request, url: about.url });
+    } catch {}
+  }
   const asks = [];
   const notices: { key: string; title: string; text: string }[] = [];
+  const laters = new Map<string, { key: string; at: string; about: string }>();
+  const mrKey = (url: string) => {
+    for (const project of config.projects) {
+      try {
+        return `feishu-review:mr:${project.id}:${manualTarget(url, config.instanceUrl, project.projectPath ?? "")}`;
+      } catch {}
+    }
+    throw new Error("MR 不属于配置项目");
+  };
+  const gitlabArgs = (url: string) => ["--config", configFile, "--mr", url];
+  const probe = async (url: string) => {
+    const result = await scanGitlab(gitlabArgs(url), true, { probe: true });
+    return result?.kind === "delivered" || result?.kind === "closed" ? result.kind : "open";
+  };
+  const submitted = new Map<string, Later | void>();
+  const submit = async (id: string, request: ReviewRequest, url: string): Promise<Later | void> => {
+    if (submitted.has(url)) return submitted.get(url);
+    const result = await scanGitlab(
+      [
+        ...gitlabArgs(url),
+        "--override",
+        "reviewer",
+        "--reason",
+        `飞书请求 ${id}；消息 ${request.message.message_id}；发起人 ${request.message.sender.id}`,
+      ],
+      true,
+    );
+    let wait: Later | undefined;
+    if (result?.kind === "ineligible")
+      notices.push({
+        key: `feishu-review:${id}:ineligible`,
+        title: "这条消息的 MR 没有审查",
+        text: `发起人：${request.message.sender.id}\n会话：${request.message.chat_id}\n消息：${request.message.message_id}\n${url}\n${result.reason}`,
+      });
+    if (result?.kind === "notReady") wait = { key: mrKey(url), readyAt: result.readyAt, url };
+    submitted.set(url, wait);
+    return wait;
+  };
+  const keep = (id: string, wait: Later) =>
+    laters.set(wait.key, {
+      key: wait.key,
+      at: new Date(wait.readyAt).toISOString(),
+      about: JSON.stringify({ request: id, url: wait.url }),
+    });
   for (const id of ids) {
     const request = load(id);
-    const result = await handleRequest(
-      request,
-      context.answers,
-      async (url) => {
-        const reason = await scanGitlab(
-          [
-            "--config",
-            configFile,
-            "--mr",
-            url,
-            "--override",
-            "reviewer",
-            "--reason",
-            `飞书请求 ${id}；消息 ${request.message.message_id}；发起人 ${request.message.sender.id}`,
-          ],
-          true,
-        );
-        if (reason)
-          notices.push({
-            key: `feishu-review:${id}:ineligible`,
-            title: "这条消息的 MR 没有审查",
-            text: `发起人：${request.message.sender.id}\n会话：${request.message.chat_id}\n消息：${request.message.message_id}\n${url}\n${reason}`,
-          });
-      },
-      policy,
-    );
+    const result = await handleRequest(request, context.answers, (url) => submit(id, request, url), policy, probe);
     asks.push(...result.ask);
+    for (const wait of result.later) keep(id, wait);
   }
-  return { ask: asks, ...(notices.length ? { notice: notices } : {}) };
+  for (const wake of wakes) {
+    const request = load(wake.id);
+    if (!request.urls.includes(wake.url)) continue;
+    const wait = await submit(wake.id, request, wake.url);
+    if (wait) keep(wake.id, wait);
+  }
+  return {
+    ask: asks,
+    ...(notices.length ? { notice: notices } : {}),
+    ...(laters.size ? { later: [...laters.values()] } : {}),
+  };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [action, flag, file] = process.argv.slice(2);

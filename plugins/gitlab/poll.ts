@@ -6,7 +6,17 @@ export function discoveryPath(projectId: number): string {
 export { eligible } from "./ci.ts";
 import { eligibleForReview, isTerminalMR, type Override } from "./ci.ts";
 
-export async function scanGitlab(argv: string[], reuseHead = false) {
+export type ScanResult =
+  | { kind: "closed" | "delivered" | "open" | "dispatched" }
+  | { kind: "ineligible"; reason: string }
+  | { kind: "notReady"; readyAt: number };
+// `probe` only reports whether a requested MR still needs a review; it never dispatches.
+export async function scanGitlab(
+  argv: string[],
+  reuseHead = false,
+  deps: { now?: () => number; probe?: boolean } = {},
+): Promise<ScanResult | undefined> {
+  const now = deps.now ?? Date.now;
   const { readFileSync, existsSync } = await import("node:fs");
   const { HOME, RULES_FILE } = await import("../../host/home.ts");
   const { loadInstructions } = await import("./instructions.ts");
@@ -18,6 +28,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
   const { scanProject } = await import("./scan.ts");
   const { manualTarget } = await import("./manual.ts");
   const { nextObservation, saveRequest, latestRequest } = await import("./request.ts");
+  const { fileIntervalStore, readyAt } = await import("./interval.ts");
   if (argv.length < 2 || argv[0] !== "--config") throw new Error("请提供配置文件路径");
   let mrUrl: string | undefined,
     reason = "",
@@ -44,6 +55,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
   if (!token) throw new Error("来源密钥为空");
   const errors: string[] = [];
   let foundManual = false;
+  let result: ScanResult | undefined;
   let temporary = false;
   let permanent = false;
   for (const project of config.projects) {
@@ -60,7 +72,10 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
         }
         foundManual = true;
         const mr = (await gl.get(`projects/${project.id}/merge_requests/${iid}`)) as any;
-        if (isTerminalMR(mr)) continue;
+        if (isTerminalMR(mr)) {
+          result = { kind: "closed" };
+          continue;
+        }
         const digest = policyHash(config, project, instructionsDigest);
         const file = join(config.dataRoot, "gitlab", "requests", `${project.id}`, `${iid}.json`);
         const previous = latestRequest(join(config.dataRoot, "gitlab"), project.id, iid);
@@ -70,16 +85,26 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
           !previous.unrouted &&
           previous.headSha === mr.sha &&
           previous.instanceKey === config.instanceKey
-        )
+        ) {
+          result = { kind: "delivered" };
           continue;
+        }
+        if (deps.probe) {
+          result = { kind: "open" };
+          continue;
+        }
+        const interval = fileIntervalStore(join(config.dataRoot, "gitlab"), project.id);
+        // Only requests that come through the chat path wait; a person at the terminal asked for this head explicitly.
+        const ready = reuseHead ? readyAt(interval, iid, config.minIntervalMinutes) : 0;
         if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides))) {
           const reason = "MR 未满足审查条件（需为已打开的非草稿 MR，且满足 Reviewer 和版本要求）";
           if (!reuseHead)
             console.log(
               `没事可做：${reason}\n\`\`\`agent-autoloop\n${JSON.stringify({ notice: [{ key: `gitlab:ineligible:${hash(mrUrl)}`, title: "这次没有审查 MR", text: `${mrUrl}\n${reason}` }] })}\n\`\`\``,
             );
-          return reason;
+          return { kind: "ineligible", reason };
         }
+        if (now() < ready) return { kind: "notReady", readyAt: ready };
         const value = {
           instanceKey: config.instanceKey,
           projectId: project.id,
@@ -107,7 +132,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
               reviewerId: config.reviewerId,
               overrides,
               reason,
-              requestedAt: new Date().toISOString(),
+              requestedAt: new Date(now()).toISOString(),
             };
         saveRequest(join(config.dataRoot, "gitlab"), record);
         const detail = {
@@ -144,6 +169,8 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
           throw new Error("项目规则未路由");
         }
         saveRequest(join(config.dataRoot, "gitlab"), { ...record, delivered: true });
+        interval.write(iid, { lastDispatchedAt: now() });
+        result = { kind: "dispatched" };
         continue;
       }
       const entries = await gl.list(discoveryPath(project.id));
@@ -157,6 +184,8 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
       const directory = join(config.dataRoot, "gitlab", "requests", `${project.id}`);
       await scanProject(config, project, metadata.path_with_namespace, digest, {
         retryUnrouted,
+        now,
+        interval: fileIntervalStore(join(config.dataRoot, "gitlab"), project.id),
         eligible: (mr) => eligibleForReview(gl, project, mr, config.reviewerId, []),
         list: async () => mrs,
         read: (iid) => latestRequest(join(config.dataRoot, "gitlab"), project.id, iid),
@@ -180,6 +209,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
   if (temporary && !permanent) throw new TemporaryError(diagnostic(errors.join("；")));
   if (errors.length) throw new Error(errors.join("；"));
   if (!reuseHead) console.log("扫描完成");
+  return result;
 }
 if (process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href) {
   const argv = process.argv.slice(2);
