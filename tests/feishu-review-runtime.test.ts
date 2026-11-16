@@ -104,7 +104,13 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
         ),
       );
     };
-    assert.equal((await run("scan")).code, 1);
+    const unavailable = await run("scan");
+    assert.equal(unavailable.code, 0, unavailable.stderr);
+    const unavailableReceipt = JSON.parse(unavailable.stdout.split("```agent-autoloop\n")[1].split("\n```")[0]);
+    assert.equal(unavailableReceipt.notice?.length ?? 0, 0);
+    assert.doesNotMatch(unavailable.stdout, /没跑成|"outcome":"failed"/);
+    assert.match(unavailable.stdout, /503/);
+    assert.equal(events.size, 0);
     const cursor = readFileSync(join(root, "feishu-review/work/ou_me/cursor.json"), "utf8");
     rejectPost = false;
     assert.equal((await run("scan")).code, 0);

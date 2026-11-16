@@ -187,15 +187,32 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
   if (!reuseHead) console.log("扫描完成");
 }
 if (process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href) {
-  scanGitlab(process.argv.slice(2)).catch(async (error) => {
-    const { TemporaryError } = await import("./api.ts");
-    if (error instanceof TemporaryError) {
-      console.log(`没跑成：${diagnostic(error.message)}`);
-      return;
-    }
-    const text = diagnostic((error as Error).message);
-    console.log(
-      `待你处理：GitLab 扫描没有完成\n\`\`\`agent-autoloop\n${JSON.stringify({ ask: [{ key: "gitlab:scan", title: "GitLab 扫描需要处理", text, options: ["已处理", "稍后处理"], about: "修复配置或连接后重新扫描" }] })}\n\`\`\``,
-    );
-  });
+  const argv = process.argv.slice(2);
+  Promise.resolve()
+    .then(async () => {
+      if (argv.includes("--mr")) return scanGitlab(argv);
+      const { loadConfig } = await import("./config.ts");
+      const { scanHealth, scanIdentity } = await import("./scan-health.ts");
+      const { resolve } = await import("node:path");
+      const config = loadConfig(argv[1]);
+      const result = await scanHealth(
+        { root: config.dataRoot, instance: config.instanceKey, kind: "gitlab", ...scanIdentity(resolve(argv[1])) },
+        async () => {
+          await scanGitlab(argv);
+          return {};
+        },
+      );
+      console.log(`扫描本轮已结束\n\`\`\`agent-autoloop\n${JSON.stringify(result)}\n\`\`\``);
+    })
+    .catch(async (error) => {
+      const { TemporaryError } = await import("./api.ts");
+      if (error instanceof TemporaryError) {
+        console.log(`没跑成：${diagnostic(error.message)}`);
+        return;
+      }
+      const text = diagnostic((error as Error).message);
+      console.log(
+        `待你处理：GitLab 扫描没有完成\n\`\`\`agent-autoloop\n${JSON.stringify({ ask: [{ key: "gitlab:scan", title: "GitLab 扫描需要处理", text, options: ["已处理", "稍后处理"], about: "修复配置或连接后重新扫描" }] })}\n\`\`\``,
+      );
+    });
 }

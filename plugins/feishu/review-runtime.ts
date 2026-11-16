@@ -1,3 +1,4 @@
+import { scanHealth, scanIdentity } from "../gitlab/scan-health.ts";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -72,112 +73,118 @@ export async function runFeishuReview(action: string, file: string) {
       const context = JSON.parse(readFileSync(process.env.AGENT_AUTOLOOP_CONTEXT, "utf8"));
       if (context.open?.some((card: any) => card.title === "飞书消息读取需要处理")) return { ask: [] };
     }
-    const status = await call(["auth", "status", "--json"]);
-    if (status.identities?.user?.openId !== settings.user) throw new AccessError("飞书登录身份与配置不符");
-    const cursorFile = join(root, "cursor.json");
-    const end = Date.now();
-    if (!existsSync(cursorFile)) atomicFile(cursorFile, JSON.stringify({ at: end - 5 * 60_000 }));
-    const cursor = JSON.parse(readFileSync(cursorFile, "utf8"));
-    if (!Number.isSafeInteger(cursor.at) || cursor.at < 0 || cursor.at > end) throw new Error("飞书扫描时间记录无效");
-    const start = larkTime(Math.max(0, cursor.at - 10 * 60_000));
-    const range = ["--start", start, "--end", larkTime(end)];
-    const messages = new Map<string, Message>();
-    for (const filter of [
-      ["--chat-type", "group", "--is-at-me"],
-      ["--chat-type", "p2p"],
-    ]) {
-      for (const message of await collectMessages(call, [
-        "im",
-        "+messages-search",
-        ...filter,
-        ...range,
-        "--sender-type",
-        "user",
-      ]))
-        messages.set(message.message_id, message);
-    }
-    const token = readFileSync(config.sourceKeyPath, "utf8").trim();
-    if (!token) throw new Error("GitLab 来源密钥为空");
-    for (const message of messages.values()) {
-      let request = classify(message, [], policy);
-      if (!request) continue;
-      request = scoped(request);
-      if (existsSync(requestFile(request.id))) request = load(request.id);
-      else {
-        if (!request.urls.length) {
-          const at = /^\d+$/.test(String(message.create_time))
-            ? Number(message.create_time)
-            : Date.parse(message.create_time ?? "");
-          if (Number.isFinite(at)) {
-            const preceding = await collectMessages(call, [
-              "im",
-              "+chat-messages-list",
-              "--chat-id",
-              message.chat_id,
-              "--start",
-              larkTime(at - 5 * 60_000),
-              "--end",
-              larkTime(at),
-              "--order",
-              "asc",
-            ]);
-            if (message.thread_id) {
-              preceding.push(
-                ...(await collectMessages(call, [
+    return scanHealth(
+      { root: config.dataRoot, instance: config.instanceKey, kind: "feishu-review", ...scanIdentity(file) },
+      async () => {
+        const status = await call(["auth", "status", "--json"]);
+        if (status.identities?.user?.openId !== settings.user) throw new AccessError("飞书登录身份与配置不符");
+        const cursorFile = join(root, "cursor.json");
+        const end = Date.now();
+        if (!existsSync(cursorFile)) atomicFile(cursorFile, JSON.stringify({ at: end - 5 * 60_000 }));
+        const cursor = JSON.parse(readFileSync(cursorFile, "utf8"));
+        if (!Number.isSafeInteger(cursor.at) || cursor.at < 0 || cursor.at > end)
+          throw new Error("飞书扫描时间记录无效");
+        const start = larkTime(Math.max(0, cursor.at - 10 * 60_000));
+        const range = ["--start", start, "--end", larkTime(end)];
+        const messages = new Map<string, Message>();
+        for (const filter of [
+          ["--chat-type", "group", "--is-at-me"],
+          ["--chat-type", "p2p"],
+        ]) {
+          for (const message of await collectMessages(call, [
+            "im",
+            "+messages-search",
+            ...filter,
+            ...range,
+            "--sender-type",
+            "user",
+          ]))
+            messages.set(message.message_id, message);
+        }
+        const token = readFileSync(config.sourceKeyPath, "utf8").trim();
+        if (!token) throw new Error("GitLab 来源密钥为空");
+        for (const message of messages.values()) {
+          let request = classify(message, [], policy);
+          if (!request) continue;
+          request = scoped(request);
+          if (existsSync(requestFile(request.id))) request = load(request.id);
+          else {
+            if (!request.urls.length) {
+              const at = /^\d+$/.test(String(message.create_time))
+                ? Number(message.create_time)
+                : Date.parse(message.create_time ?? "");
+              if (Number.isFinite(at)) {
+                const preceding = await collectMessages(call, [
                   "im",
-                  "+threads-messages-list",
-                  "--thread",
-                  message.thread_id,
+                  "+chat-messages-list",
+                  "--chat-id",
+                  message.chat_id,
+                  "--start",
+                  larkTime(at - 5 * 60_000),
+                  "--end",
+                  larkTime(at),
                   "--order",
                   "asc",
-                ])),
-              );
+                ]);
+                if (message.thread_id) {
+                  preceding.push(
+                    ...(await collectMessages(call, [
+                      "im",
+                      "+threads-messages-list",
+                      "--thread",
+                      message.thread_id,
+                      "--order",
+                      "asc",
+                    ])),
+                  );
+                }
+                request = scoped(
+                  classify(
+                    message,
+                    preceding.filter((m) => {
+                      const time = /^\d+$/.test(String(m.create_time))
+                        ? Number(m.create_time)
+                        : Date.parse(m.create_time ?? "");
+                      return m.message_id !== message.message_id && Number.isFinite(time) && time <= at;
+                    }),
+                    policy,
+                  )!,
+                );
+              }
             }
-            request = scoped(
-              classify(
-                message,
-                preceding.filter((m) => {
-                  const time = /^\d+$/.test(String(m.create_time))
-                    ? Number(m.create_time)
-                    : Date.parse(m.create_time ?? "");
-                  return m.message_id !== message.message_id && Number.isFinite(time) && time <= at;
-                }),
-                policy,
-              )!,
-            );
+            if (
+              !request.urls.length &&
+              (settings.askUnmatched === false || /\/-\/merge_requests\/\d/.test(message.content))
+            )
+              continue;
+            atomicFile(requestFile(request.id), JSON.stringify(request), true);
           }
+          const response = await postEvent(`${config.hubUrl}/v1/events`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              id: `feishu-review:${request.id}`,
+              type: eventType,
+              subject: request.id,
+              summary: "飞书审查请求",
+              detail: JSON.stringify({ requestId: request.id }),
+            }),
+          });
+          if (!response.ok) throw new Error(`飞书请求未交给中台（${response.status}）`);
+          const receipt: any = await response.json();
+          if (
+            !Number.isSafeInteger(receipt.event) ||
+            typeof receipt.duplicate !== "boolean" ||
+            !Array.isArray(receipt.routed) ||
+            receipt.routed.length !== 1
+          )
+            throw new Error("飞书请求未匹配唯一处理规则；修复后需重新投递未路由事件");
         }
-        if (
-          !request.urls.length &&
-          (settings.askUnmatched === false || /\/-\/merge_requests\/\d/.test(message.content))
-        )
-          continue;
-        atomicFile(requestFile(request.id), JSON.stringify(request), true);
-      }
-      const response = await postEvent(`${config.hubUrl}/v1/events`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          id: `feishu-review:${request.id}`,
-          type: eventType,
-          subject: request.id,
-          summary: "飞书审查请求",
-          detail: JSON.stringify({ requestId: request.id }),
-        }),
-      });
-      if (!response.ok) throw new Error(`飞书请求未交给中台（${response.status}）`);
-      const receipt: any = await response.json();
-      if (
-        !Number.isSafeInteger(receipt.event) ||
-        typeof receipt.duplicate !== "boolean" ||
-        !Array.isArray(receipt.routed) ||
-        receipt.routed.length !== 1
-      )
-        throw new Error("飞书请求未匹配唯一处理规则；修复后需重新投递未路由事件");
-    }
-    // Advance only after the Hub durably acknowledges every event, including duplicate deliveries.
-    atomicFile(cursorFile, JSON.stringify({ at: end }));
-    return { ask: [] };
+        // Advance only after the Hub durably acknowledges every event, including duplicate deliveries.
+        atomicFile(cursorFile, JSON.stringify({ at: end }));
+        return { ask: [] };
+      },
+    );
   }
   if (action !== "review" || !process.env.AGENT_AUTOLOOP_CONTEXT) throw new Error("缺少飞书请求上下文");
   const context = JSON.parse(readFileSync(process.env.AGENT_AUTOLOOP_CONTEXT, "utf8"));
