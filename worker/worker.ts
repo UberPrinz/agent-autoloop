@@ -69,6 +69,7 @@ export type WorkerOptions = {
   hub: WorkerHub;
   name: string;
   capacity?: number;
+  loginShell?: boolean;
   log?: (line: string) => void;
   /** Run when the hub can't be reached for ten minutes, with {text} in it: nothing else can tell the owner then. */
   unreachable?: string[];
@@ -151,6 +152,7 @@ export function createWorker({
   hub,
   name,
   capacity = 2,
+  loginShell = true,
   log = () => {},
   unreachable,
   wait = WAIT,
@@ -210,8 +212,8 @@ export function createWorker({
       // A final external command can replace the shell before publishing its exit file.
       ":",
     ].join("\n");
-    // The login shell gives it the PATH and sign-in its owner has in a terminal; launchd and systemd give neither.
-    const login = [process.env.SHELL ?? "/bin/sh", "-lc", 'exec "$0" "$@"'];
+    // launchd keeps its login-shell default; services may explicitly retain their own environment.
+    const login = loginShell ? [process.env.SHELL ?? "/bin/sh", "-lc", 'exec "$0" "$@"'] : [];
     const child = spawn("/bin/sh", ["-c", script, marker(entry), out, err, exit, ...login, ...argv], {
       cwd,
       env: agentEnvironment(entry),

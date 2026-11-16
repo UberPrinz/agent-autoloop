@@ -76,8 +76,15 @@ export async function up() {
     };
   }
   if (config.worker) {
-    const { key, name, capacity, unreachable } = config.worker;
-    const worker = createWorker({ hub: hubClient(config.url, key), name, capacity, unreachable, log: log("worker") });
+    const { key, name, capacity, unreachable, loginShell } = config.worker;
+    const worker = createWorker({
+      hub: hubClient(config.url, key),
+      name,
+      capacity,
+      unreachable,
+      loginShell,
+      log: log("worker"),
+    });
     jobs.push(worker.run(stop.signal));
   }
   for (const [id, channel] of Object.entries(config.channels ?? {})) {
