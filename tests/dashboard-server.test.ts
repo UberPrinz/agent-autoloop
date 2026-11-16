@@ -201,3 +201,21 @@ test("after dispatch, malformed successes and upstream failures are unknown; aut
     assert.ok(!JSON.stringify(payload).includes("SECRET"));
   }
 });
+
+// Failure mode: the removed resolve route comes back or forwards a close request to the hub.
+test("there is no resolve route and nothing reaches the hub", async (t) => {
+  let writes = 0;
+  const f = await fixture(t, (req: any, res: any) => {
+    if (req.method === "POST") writes++;
+    json(res, state());
+  });
+  for (const action of ["resolve", "answer"]) {
+    const r = await fetch(f.base + "/api/cards/1/resolve", {
+      method: "POST",
+      headers: { ...f.headers, "x-dashboard-action": action },
+      body: '{"reason":"x"}',
+    });
+    assert.equal(r.status, 404);
+  }
+  assert.equal(writes, 0);
+});

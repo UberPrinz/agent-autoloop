@@ -3,70 +3,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startDashboardApp } from "../dashboard/public/app-controller.js";
+import { documentFixture, response, flush, app } from "./dashboard-dom.ts";
 import { state, card } from "./dashboard-fixture.ts";
-function documentFixture() {
-  const listeners: Record<string, Function> = {};
-  let activeElement: any = null;
-  const contains = (parent: any, target: any): boolean =>
-    parent === target || parent.children.some((child: any) => contains(child, target));
-  const node = (tag = "div"): any => ({
-    tagName: tag,
-    listeners: {} as Record<string, Function>,
-    children: [],
-    textContent: "",
-    hidden: false,
-    append(...items: any[]) {
-      this.children.push(...items);
-    },
-    replaceChildren(...items: any[]) {
-      if (contains(this, activeElement)) activeElement = null;
-      this.children = items;
-    },
-    setAttribute() {},
-    addEventListener(name: string, fn: Function) {
-      this.listeners[name] = fn;
-    },
-    dispatch(name: string) {
-      this.listeners[name]?.();
-    },
-    focus() {
-      activeElement = this;
-    },
-  });
-  const nodes = Object.fromEntries(
-    ["summary", "waiting", "scheduled", "detail", "status", "refresh"].map((id) => [id, node()]),
-  );
-  return {
-    hidden: false,
-    createElement: node,
-    get activeElement() {
-      return activeElement;
-    },
-    getElementById: (id: string) => {
-      const find = (parent: any): any => (parent.id === id ? parent : parent.children.map(find).find(Boolean));
-      return nodes[id] || Object.values(nodes).map(find).find(Boolean);
-    },
-    addEventListener: (name: string, fn: Function) => (listeners[name] = fn),
-    removeEventListener() {},
-    dispatch: (name: string) => listeners[name]?.(),
-    nodes,
-  };
-}
-function response(value: unknown, status = 200, instance = "instance") {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { "x-dashboard-instance": instance, "content-type": "application/json" },
-  });
-}
-const flush = async () => {
-  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
-};
-function app(fetchImpl: typeof fetch) {
-  const document = documentFixture();
-  const app = startDashboardApp({ document: document as any, fetchImpl, setTimer: () => 0, clearTimer: () => {} });
-  return { app, document };
-}
-
 test("explicit original options, no preselection, duplicate suppression and success surviving failed refresh", async () => {
   let posts = 0,
     fail = false;
