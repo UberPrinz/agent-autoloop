@@ -23,6 +23,7 @@ export type Config = {
   dataRoot: string;
   model: string;
   effort?: string;
+  minIntervalMinutes: number;
   codexPath: string;
   glabPath: string;
   projects: Project[];
@@ -78,6 +79,8 @@ export function parseConfig(value: unknown, baseDir?: string): Config {
     !v.projects.length
   )
     throw new Error("配置不符合要求");
+  if (v.minIntervalMinutes !== undefined && (!Number.isSafeInteger(v.minIntervalMinutes) || v.minIntervalMinutes < 0))
+    throw new Error("minIntervalMinutes 必须是不小于 0 的整数");
   let instance: URL, hub: URL;
   try {
     instance = new URL(v.instanceUrl);
@@ -153,6 +156,7 @@ export function parseConfig(value: unknown, baseDir?: string): Config {
     dataRoot: v.dataRoot,
     model: v.model,
     ...(v.effort === undefined ? {} : { effort: v.effort }),
+    minIntervalMinutes: v.minIntervalMinutes ?? 10,
     codexPath: v.codexPath,
     glabPath: v.glabPath,
     projects,

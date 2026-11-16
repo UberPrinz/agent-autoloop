@@ -179,6 +179,6 @@ GitLab 审查从扫描到评论发布均不等待 CI；旧 CI 配置仅兼容读
 
 GitLab 审查只准备可信 main 工作目录，然后启动原生 Codex，发送 rules.prompt 与 MR 链接（附当前提交供核对）。插件不预下载、转换或校验 MR Diff，不准备 MR Git 对象或上下文副本；MR 的读取由 Codex 按 Skill 自行完成。发布统一使用普通 Discussion，正文保留文件和行号；发布前仍核对版本、策略和授权。同一 head 的 findings 可复用；发布清单的授权范围仍逐项核对。
 
-飞书可作为 GitLab 审查的第二入口：用本人身份轮询群聊 @ 和私聊，明确请求自动审查、模糊请求用卡片确认。只覆盖 Reviewer，保留草稿和发布策略，CI 不再作为门槛；同 head 不重复派发，不回复同事。使用标准 `feishu` Agent 插件，显式配置后启用；权限、串行接入与部署见[飞书消息委托审查](../../docs/gitlab-review.md#飞书消息委托审查)。
+飞书可作为 GitLab 审查的第二入口：用本人身份轮询群聊 @ 和私聊，消息里有已配置项目的带编号 MR 链接就自动审查（同一版本只审一次，同一个 MR 两次派发至少间隔 `minIntervalMinutes` 分钟），没有链接的模糊请求用卡片确认。只覆盖 Reviewer，保留草稿和发布策略，CI 不再作为门槛；同 head 不重复派发，不回复同事。使用标准 `feishu` Agent 插件，显式配置后启用；权限、串行接入与部署见[飞书消息委托审查](../../docs/gitlab-review.md#飞书消息委托审查)。
 
 接单程序环境：`config.json` 的 `worker.loginShell` 默认 `true`；systemd 推荐 `EnvironmentFile` 加 `loginShell: false`，使程序查找和启动只用服务环境。调整部署前遵守用户授权，不自动修改个人 shell。GitLab / 飞书定时扫描临时故障由下一次 cron 重试，持续 30 分钟通知、恢复后结案；不要把这类扫描结果改回 failed。

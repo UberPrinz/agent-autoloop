@@ -53,7 +53,9 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
       chat_id: "oc_1",
       chat_type: "p2p",
       sender: { id: "ou_peer", sender_type: "user" },
-      content: "https://gitlab.example.com/team/repo/-/merge_requests/7",
+      // Two MRs: one link alone starts automatically, so a card needs more than one open MR.
+      content:
+        "https://gitlab.example.com/team/repo/-/merge_requests/7 https://gitlab.example.com/team/repo/-/merge_requests/8",
       create_time: String(Date.now()),
     };
     const messagesFile = join(root, "messages.json");
@@ -78,6 +80,7 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
         sourceKeyPath: join(root, "key"),
         dataRoot: root,
         model: "test",
+        minIntervalMinutes: 0,
         codexPath: process.execPath,
         glabPath: glab,
         projects: [{ id: 42, projectPath: "team/repo", cachePath: bare }],
@@ -136,7 +139,11 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
     const result = JSON.parse(first.stdout.split("```agent-autoloop\n")[1].split("\n```")[0]);
     assert.equal(result.ask.length, 1);
     assert.equal(events.size, 1);
-    const confirmed = { events: [], answers: [{ about: result.ask[0].about, choice: 0 }] };
+    assert.deepEqual(result.ask[0].options.slice(2), ["审查 team/repo!7", "审查 team/repo!8"]);
+    const confirmed = {
+      events: [],
+      answers: [{ about: result.ask[0].about, choice: 2, options: result.ask[0].options }],
+    };
     for (const state of ["merged", "closed"]) {
       writeFileSync(mrFile, JSON.stringify({ ...mr, state }));
       const obsolete = await run("review", confirmed);
@@ -165,7 +172,13 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
     assert.equal(record.delivered, true);
     writeFileSync(
       messagesFile,
-      JSON.stringify([{ ...message, message_id: "om_2", content: `帮忙 review ${message.content}` }]),
+      JSON.stringify([
+        {
+          ...message,
+          message_id: "om_2",
+          content: `帮忙 review https://gitlab.example.com/team/repo/-/merge_requests/7`,
+        },
+      ]),
     );
     assert.equal((await run("scan")).code, 0);
     const explicit = [...events.values()].find((e) => e.type === "feishu.review.request.app" && e.id !== event.id);
