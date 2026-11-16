@@ -270,3 +270,5 @@ GitLab 审查只准备可信 main 工作目录，然后启动原生 Codex，发�
 飞书可作为 GitLab 审查的第二入口：用本人身份轮询群聊 @ 和私聊，明确请求自动审查、模糊请求用卡片确认。只覆盖 Reviewer，保留草稿和发布策略，CI 不再作为门槛；同 head 不重复派发，不回复同事。使用标准 `feishu` Agent 插件，显式配置后启用；权限、串行接入与部署见[飞书消息委托审查](docs/gitlab-review.md#飞书消息委托审查)。
 
 看板默认地址 `http://127.0.0.1:3352`，可用 `PORT` 覆盖。退出看板不停止任务；升级请先退出看板，再安装/更新，随后重新运行 `agent-autoloop dashboard` 并重新加载页面。看板只供本人本机使用，不提供历史列表、文字回答或任务控制。
+
+接单程序默认使用登录 shell，兼容 macOS launchd。Linux systemd 建议在服务中设置 `EnvironmentFile`，并在 `config.json` 的 `worker` 段设置 `"loginShell": false`：程序查找和子进程都使用服务自身的 PATH 与代理环境，不读取个人登录 shell 设置。具体示例见 [INSTALL](INSTALL.md#接单程序的环境)。

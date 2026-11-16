@@ -1,7 +1,8 @@
+import { diagnostic } from "./errors.ts";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, policyHash } from "./config.ts";
-import { GitLab, TemporaryError } from "./api.ts";
+import { GitLab } from "./api.ts";
 import { hash, canonical } from "./storage.ts";
 import { completedReport, loadArtifact, saveArtifact } from "./artifacts.ts";
 import { selectRequest, obsoleteCards, eventMatches, type Request } from "./review.ts";
@@ -127,8 +128,16 @@ async function main() {
   }
   const stored = records.find((record) => record.requestId === selected.requestId);
   const overrides = selected.origin === "manual" ? manualOverrides(stored, selected.requestId, config.reviewerId) : [];
-  if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides)))
-    throw new Error("当前 MR 未满足审查条件");
+  if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides))) {
+    summary = "没事可做：当前 MR 未满足审查条件（需为已打开的非草稿 MR，且满足 Reviewer 和版本要求）";
+    if (selected.origin === "manual")
+      notices.push({
+        key: `gitlab:ineligible:${selected.requestId}`,
+        title: "这次没有审查 MR",
+        text: `${config.instanceUrl}/${project.projectPath}/-/merge_requests/${selected.mrIid}\n${summary}`,
+      });
+    return;
+  }
   const refs = { head_sha: selected.headSha };
   const mrUrl = `${config.instanceUrl}/${project.projectPath}/-/merge_requests/${selected.mrIid}`;
   const reviewContext = {
@@ -387,7 +396,7 @@ async function main() {
 }
 main()
   .catch((error) => {
-    console.error(error instanceof TemporaryError ? "GitLab 暂时不可用" : (error as Error).message);
+    console.error(diagnostic((error as Error).message));
     process.exitCode = 1;
   })
   .finally(emit);

@@ -272,3 +272,5 @@ Feishu can provide a second GitLab review entry point: poll mentions and direct 
 GitLab review cards show the MR link, brief problem/impact summaries, suggestions and the number of comments awaiting approval. Feishu folds full locations, evidence and publication scope under “查看完整报告”. Long reports use numbered notifications. Audit hashes stay internal; full comments, publication checks and answers to existing cards remain supported. Previews are shortened from the original text and show at most five findings.
 
 The dashboard is a separate foreground process at `http://127.0.0.1:3352` (`PORT` overrides it). Quitting it leaves hub tasks running. Before upgrading, quit the dashboard; after installation/update, restart it and reload the page. It is for the local owner only, with no history lists, text answers or task controls.
+
+Workers use a login shell by default for macOS launchd compatibility. For Linux systemd, configure an `EnvironmentFile` and set `"loginShell": false` in the `worker` section of `config.json`. Program lookup and child processes then use the service PATH and proxy environment. See [installation](INSTALL.md#接单程序的环境).
