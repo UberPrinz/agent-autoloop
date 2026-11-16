@@ -1,3 +1,4 @@
+import { diagnostic } from "./errors.ts";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, policyHash } from "./config.ts";
@@ -387,7 +388,7 @@ async function main() {
 }
 main()
   .catch((error) => {
-    console.error(error instanceof TemporaryError ? "GitLab 暂时不可用" : (error as Error).message);
+    console.error(diagnostic((error as Error).message));
     process.exitCode = 1;
   })
   .finally(emit);

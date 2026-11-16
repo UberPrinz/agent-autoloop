@@ -1,3 +1,4 @@
+import { postEvent, diagnostic } from "./errors.ts";
 export function discoveryPath(projectId: number): string {
   if (!Number.isSafeInteger(projectId) || projectId <= 0) throw new Error("项目编号无效");
   return `projects/${projectId}/merge_requests?state=opened&per_page=100`;
@@ -44,6 +45,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
   const errors: string[] = [];
   let foundManual = false;
   let temporary = false;
+  let permanent = false;
   for (const project of config.projects) {
     try {
       const metadata = await verifyProjectRemote(gl, project);
@@ -120,7 +122,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
           detail: JSON.stringify(detail),
           link: mrUrl,
         };
-        const response = await fetch(`${config.hubUrl}/v1/events`, {
+        const response = await postEvent(`${config.hubUrl}/v1/events`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify(event),
@@ -157,7 +159,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
         read: (iid) => latestRequest(join(config.dataRoot, "gitlab"), project.id, iid),
         write: (record) => saveRequest(join(config.dataRoot, "gitlab"), record),
         post: async (event) => {
-          const response = await fetch(`${config.hubUrl}/v1/events`, {
+          const response = await postEvent(`${config.hubUrl}/v1/events`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
             body: JSON.stringify(event),
@@ -168,12 +170,13 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
         },
       });
     } catch (error) {
-      if (error instanceof TemporaryError || error instanceof TypeError) temporary = true;
+      if (error instanceof TemporaryError) temporary = true;
+      else permanent = true;
       errors.push(`项目 ${project.id}：${(error as Error).message}`);
     }
   }
   if (mrUrl && !foundManual) throw new Error("MR 不属于配置实例或项目");
-  if (temporary) throw new TemporaryError("GitLab 或中台暂时不可用");
+  if (temporary && !permanent) throw new TemporaryError(diagnostic(errors.join("；")));
   if (errors.length) throw new Error(errors.join("；"));
   if (!reuseHead) console.log("扫描完成");
 }
@@ -181,10 +184,10 @@ if (process.argv[1] && import.meta.url === (await import("node:url")).pathToFile
   scanGitlab(process.argv.slice(2)).catch(async (error) => {
     const { TemporaryError } = await import("./api.ts");
     if (error instanceof TemporaryError) {
-      console.log("没跑成：GitLab 或中台暂时不可用");
+      console.log(`没跑成：${diagnostic(error.message)}`);
       return;
     }
-    const text = (error as Error).message.slice(0, 1000);
+    const text = diagnostic((error as Error).message);
     console.log(
       `待你处理：GitLab 扫描没有完成\n\`\`\`agent-autoloop\n${JSON.stringify({ ask: [{ key: "gitlab:scan", title: "GitLab 扫描需要处理", text, options: ["已处理", "稍后处理"], about: "修复配置或连接后重新扫描" }] })}\n\`\`\``,
     );
