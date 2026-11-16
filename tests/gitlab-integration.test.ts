@@ -1,4 +1,4 @@
-// Failure modes: completed MRs retry forever; CI blocks execution or answer publication; a remote report cannot resume, or a stale rule copy accepts a Hub job.
+// Failure modes: ineligible requests retry or disappear without a manual explanation; completed MRs retry forever; CI blocks execution or answer publication; a remote report cannot resume, or a stale rule copy accepts a Hub job.
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
 import {
@@ -232,6 +232,22 @@ test("GitLab event and answer travel through the real Hub and Worker receipt", a
     writeFileSync(join(root, "entry.json"), JSON.stringify({ job: { rule: job.rule } }));
     const file = join(root, "config.json");
     writeFileSync(file, JSON.stringify(raw));
+    // Admission failure must finish before invoking Codex or preparing publication.
+    writeFileSync(mrFile, JSON.stringify({ ...mr, draft: true }));
+    const ineligibleRun = spawnSync(
+      process.execPath,
+      [resolve("plugins/gitlab/run.ts"), "--config", file, "--model", "model"],
+      {
+        encoding: "utf8",
+        env: { ...process.env, AGENT_AUTOLOOP_HOME: root, AGENT_AUTOLOOP_CONTEXT: context, AGENT_AUTOLOOP_RUN: "1" },
+      },
+    );
+    assert.equal(ineligibleRun.status, 0, ineligibleRun.stderr);
+    assert.equal(resultFrom(readMessage(ineligibleRun.stdout), {}).result.outcome, "nothing");
+    assert.match(ineligibleRun.stdout, /未满足审查条件/);
+    assert.equal(existsSync(join(root, "gitlab", "reports")), false);
+    assert.equal(existsSync(join(root, "posts.log")), false);
+    writeFileSync(mrFile, JSON.stringify(mr));
     const originalRulesForRace = readFileSync(rulesPath, "utf8");
     const staleRules = JSON.parse(originalRulesForRace);
     staleRules.rules[0].prompt = "服务器旧 prompt";

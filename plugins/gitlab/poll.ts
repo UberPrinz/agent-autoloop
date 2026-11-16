@@ -1,3 +1,4 @@
+import { postEvent, diagnostic } from "./errors.ts";
 export function discoveryPath(projectId: number): string {
   if (!Number.isSafeInteger(projectId) || projectId <= 0) throw new Error("项目编号无效");
   return `projects/${projectId}/merge_requests?state=opened&per_page=100`;
@@ -36,7 +37,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
   if ((!mrUrl && (overrides.length || reason)) || (overrides.length && !reason.trim()))
     throw new Error("覆盖条件需要目标和原因");
   const config = loadConfig(argv[1]);
-  const gl = new GitLab(config.glabPath, config.instanceUrl);
+  const gl = new GitLab(config.glabPath, config.instanceUrl, !!mrUrl);
   const user = (await gl.get("user")) as { id?: number };
   if (user?.id !== config.reviewerId) throw new Error("GitLab 登录身份与配置不符");
   const token = readFileSync(config.sourceKeyPath, "utf8").trim();
@@ -44,6 +45,7 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
   const errors: string[] = [];
   let foundManual = false;
   let temporary = false;
+  let permanent = false;
   for (const project of config.projects) {
     try {
       const metadata = await verifyProjectRemote(gl, project);
@@ -70,8 +72,14 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
           previous.instanceKey === config.instanceKey
         )
           continue;
-        if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides)))
-          throw new Error("MR 未满足审查条件");
+        if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides))) {
+          const reason = "MR 未满足审查条件（需为已打开的非草稿 MR，且满足 Reviewer 和版本要求）";
+          if (!reuseHead)
+            console.log(
+              `没事可做：${reason}\n\`\`\`agent-autoloop\n${JSON.stringify({ notice: [{ key: `gitlab:ineligible:${hash(mrUrl)}`, title: "这次没有审查 MR", text: `${mrUrl}\n${reason}` }] })}\n\`\`\``,
+            );
+          return reason;
+        }
         const value = {
           instanceKey: config.instanceKey,
           projectId: project.id,
@@ -120,14 +128,11 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
           detail: JSON.stringify(detail),
           link: mrUrl,
         };
-        const response = await fetch(`${config.hubUrl}/v1/events`, {
+        const receipt: any = await postEvent(`${config.hubUrl}/v1/events`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify(event),
         });
-        if (response.status >= 500 || response.status === 429) throw new TemporaryError("中台暂时不可用");
-        if (!response.ok) throw new Error(`中台接收失败（${response.status}）`);
-        const receipt = (await response.json()) as any;
         if (
           !Number.isSafeInteger(receipt.event) ||
           typeof receipt.duplicate !== "boolean" ||
@@ -157,36 +162,52 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
         read: (iid) => latestRequest(join(config.dataRoot, "gitlab"), project.id, iid),
         write: (record) => saveRequest(join(config.dataRoot, "gitlab"), record),
         post: async (event) => {
-          const response = await fetch(`${config.hubUrl}/v1/events`, {
+          const receipt: any = await postEvent(`${config.hubUrl}/v1/events`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
             body: JSON.stringify(event),
           });
-          if (response.status >= 500 || response.status === 429) throw new TemporaryError("中台暂时不可用");
-          if (!response.ok) throw new Error(`中台接收失败（${response.status}）`);
-          return (await response.json()) as { event: number; duplicate: boolean; routed: string[] };
+          return receipt as { event: number; duplicate: boolean; routed: string[] };
         },
       });
     } catch (error) {
-      if (error instanceof TemporaryError || error instanceof TypeError) temporary = true;
+      if (error instanceof TemporaryError) temporary = true;
+      else permanent = true;
       errors.push(`项目 ${project.id}：${(error as Error).message}`);
     }
   }
   if (mrUrl && !foundManual) throw new Error("MR 不属于配置实例或项目");
-  if (temporary) throw new TemporaryError("GitLab 或中台暂时不可用");
+  if (temporary && !permanent) throw new TemporaryError(diagnostic(errors.join("；")));
   if (errors.length) throw new Error(errors.join("；"));
   if (!reuseHead) console.log("扫描完成");
 }
 if (process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href) {
-  scanGitlab(process.argv.slice(2)).catch(async (error) => {
-    const { TemporaryError } = await import("./api.ts");
-    if (error instanceof TemporaryError) {
-      console.log("没跑成：GitLab 或中台暂时不可用");
-      return;
-    }
-    const text = (error as Error).message.slice(0, 1000);
-    console.log(
-      `待你处理：GitLab 扫描没有完成\n\`\`\`agent-autoloop\n${JSON.stringify({ ask: [{ key: "gitlab:scan", title: "GitLab 扫描需要处理", text, options: ["已处理", "稍后处理"], about: "修复配置或连接后重新扫描" }] })}\n\`\`\``,
-    );
-  });
+  const argv = process.argv.slice(2);
+  Promise.resolve()
+    .then(async () => {
+      if (argv.includes("--mr")) return scanGitlab(argv);
+      const { loadConfig } = await import("./config.ts");
+      const { scanHealth, scanIdentity } = await import("./scan-health.ts");
+      const { resolve } = await import("node:path");
+      const config = loadConfig(argv[1]);
+      const result = await scanHealth(
+        { root: config.dataRoot, instance: config.instanceKey, kind: "gitlab", ...scanIdentity(resolve(argv[1])) },
+        async () => {
+          await scanGitlab(argv);
+          return {};
+        },
+      );
+      console.log(`扫描本轮已结束\n\`\`\`agent-autoloop\n${JSON.stringify(result)}\n\`\`\``);
+    })
+    .catch(async (error) => {
+      const { TemporaryError } = await import("./api.ts");
+      if (error instanceof TemporaryError) {
+        console.log(`没跑成：${diagnostic(error.message)}`);
+        return;
+      }
+      const text = diagnostic((error as Error).message);
+      console.log(
+        `待你处理：GitLab 扫描没有完成\n\`\`\`agent-autoloop\n${JSON.stringify({ ask: [{ key: "gitlab:scan", title: "GitLab 扫描需要处理", text, options: ["已处理", "稍后处理"], about: "修复配置或连接后重新扫描" }] })}\n\`\`\``,
+      );
+    });
 }
