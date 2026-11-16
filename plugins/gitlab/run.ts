@@ -128,8 +128,16 @@ async function main() {
   }
   const stored = records.find((record) => record.requestId === selected.requestId);
   const overrides = selected.origin === "manual" ? manualOverrides(stored, selected.requestId, config.reviewerId) : [];
-  if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides)))
-    throw new Error("当前 MR 未满足审查条件");
+  if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides))) {
+    summary = "没事可做：当前 MR 未满足审查条件（需为已打开的非草稿 MR，且满足 Reviewer 和版本要求）";
+    if (selected.origin === "manual")
+      notices.push({
+        key: `gitlab:ineligible:${selected.requestId}`,
+        title: "这次没有审查 MR",
+        text: `${config.instanceUrl}/${project.projectPath}/-/merge_requests/${selected.mrIid}\n${summary}`,
+      });
+    return;
+  }
   const refs = { head_sha: selected.headSha };
   const mrUrl = `${config.instanceUrl}/${project.projectPath}/-/merge_requests/${selected.mrIid}`;
   const reviewContext = {

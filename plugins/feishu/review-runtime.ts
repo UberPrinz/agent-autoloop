@@ -190,13 +190,14 @@ export async function runFeishuReview(action: string, file: string) {
   }
   for (const answer of context.answers) ids.add(answer.about);
   const asks = [];
+  const notices: { key: string; title: string; text: string }[] = [];
   for (const id of ids) {
     const request = load(id);
     const result = await handleRequest(
       request,
       context.answers,
       async (url) => {
-        await scanGitlab(
+        const reason = await scanGitlab(
           [
             "--config",
             configFile,
@@ -209,12 +210,18 @@ export async function runFeishuReview(action: string, file: string) {
           ],
           true,
         );
+        if (reason)
+          notices.push({
+            key: `feishu-review:${id}:ineligible`,
+            title: "这条消息的 MR 没有审查",
+            text: `发起人：${request.message.sender.id}\n会话：${request.message.chat_id}\n消息：${request.message.message_id}\n${url}\n${reason}`,
+          });
       },
       policy,
     );
     asks.push(...result.ask);
   }
-  return { ask: asks };
+  return { ask: asks, ...(notices.length ? { notice: notices } : {}) };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [action, flag, file] = process.argv.slice(2);

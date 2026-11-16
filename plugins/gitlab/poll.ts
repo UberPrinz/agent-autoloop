@@ -72,8 +72,14 @@ export async function scanGitlab(argv: string[], reuseHead = false) {
           previous.instanceKey === config.instanceKey
         )
           continue;
-        if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides)))
-          throw new Error("MR 未满足审查条件");
+        if (!(await eligibleForReview(gl, project, mr, config.reviewerId, overrides))) {
+          const reason = "MR 未满足审查条件（需为已打开的非草稿 MR，且满足 Reviewer 和版本要求）";
+          if (!reuseHead)
+            console.log(
+              `没事可做：${reason}\n\`\`\`agent-autoloop\n${JSON.stringify({ notice: [{ key: `gitlab:ineligible:${hash(mrUrl)}`, title: "这次没有审查 MR", text: `${mrUrl}\n${reason}` }] })}\n\`\`\``,
+            );
+          return reason;
+        }
         const value = {
           instanceKey: config.instanceKey,
           projectId: project.id,
