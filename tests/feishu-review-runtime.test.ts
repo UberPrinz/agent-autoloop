@@ -134,7 +134,12 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
       assert.equal(existsSync(join(root, "gitlab/requests/42/7.json")), false);
     }
     writeFileSync(mrFile, JSON.stringify({ ...mr, draft: true }));
-    assert.equal((await run("review", confirmed)).code, 1);
+    const ineligible = await run("review", confirmed);
+    assert.equal(ineligible.code, 0, ineligible.stderr);
+    const skipped = JSON.parse(ineligible.stdout.split("```agent-autoloop\n")[1].split("\n```")[0]);
+    assert.match(skipped.notice[0].text, /MR 未满足审查条件/);
+    assert.match(skipped.notice[0].key, /^feishu-review:/);
+    assert.equal(existsSync(join(root, "gitlab/requests/42/7.json")), false);
     assert.equal(events.size, 1);
     writeFileSync(mrFile, JSON.stringify(mr));
     const accepted = await run("review", confirmed);
