@@ -125,3 +125,25 @@ GitLab 审查只准备可信 main 工作目录，然后启动原生 Codex，发�
 安装包已经包含看板，无需另装项目。运行 `agent-autoloop dashboard` 后打开打印的地址，默认 `http://127.0.0.1:3352`；用 `PORT=3353 agent-autoloop dashboard` 改端口。配置沿用 `AGENT_AUTOLOOP_HOME/config.json` 中的回环中台地址和本人密钥；中台离线时页面提示连接失败。页面左侧是按合并请求分组的待我处理列表，右侧是详情，选项和提交按钮固定在底部（窄屏时列表与详情二选一，详情有“返回”）。看板不启动中台，不自动打开浏览器，Ctrl-C 只关闭看板，任务和通道继续运行。
 
 升级顺序：先 Ctrl-C 退出看板，再按当前安装方式运行安装或更新命令，最后重启 `agent-autoloop dashboard` 并重新加载浏览器页面。更新命令不会自动重启看板；旧页面遇到进程变化会禁用提交并提示重载。旧独立看板目录不再是运行依赖，不要同时运行两份占用同一端口。
+
+## 接单程序的环境
+
+`config.json` 的 `worker.loginShell` 可选，默认 `true`，保留 macOS launchd 依赖的登录 shell 行为。设为 `false` 后，查找程序只用当前进程的 PATH，启动 Agent 不再经过 `$SHELL -lc`。程序名要在服务 PATH 中可执行，或在可信配置中写绝对路径。
+
+Linux systemd 推荐把运行环境明确放在服务的 `EnvironmentFile`，同时关闭登录 shell。例如在该实例服务的 drop-in 中写：
+
+```ini
+[Service]
+EnvironmentFile=%h/.config/agent-autoloop.env
+```
+
+环境文件使用 systemd 的 `NAME=value` 格式，写完整 PATH 和所需代理地址，不写 `export` 或 shell 命令。文件权限设为 `0600`。私有配置示例：
+
+```json
+{
+  "url": "http://127.0.0.1:13000",
+  "worker": { "name": "review-server", "key": "REPLACE_WITH_WORKER_KEY", "capacity": 1, "loginShell": false }
+}
+```
+
+修改后重载 systemd 并重启对应实例服务；先排空活动轮次。环境开关不会移除服务本身已有的变量，也不会改变 Agent 的权限或中台密钥过滤。本次代码交付不会自动改任何现有部署。

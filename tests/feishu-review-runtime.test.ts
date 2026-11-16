@@ -104,8 +104,20 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
         ),
       );
     };
-    assert.equal((await run("scan")).code, 1);
+    const unavailable = await run("scan");
+    assert.equal(unavailable.code, 0, unavailable.stderr);
+    const unavailableReceipt = JSON.parse(unavailable.stdout.split("```agent-autoloop\n")[1].split("\n```")[0]);
+    assert.equal(unavailableReceipt.notice?.length ?? 0, 0);
+    assert.doesNotMatch(unavailable.stdout, /没跑成|"outcome":"failed"/);
+    assert.match(unavailable.stdout, /503/);
+    assert.equal(events.size, 0);
     const cursor = readFileSync(join(root, "feishu-review/work/ou_me/cursor.json"), "utf8");
+    assert.equal((await run("scan")).code, 0);
+    assert.equal(
+      readFileSync(join(root, "feishu-review/work/ou_me/cursor.json"), "utf8"),
+      cursor,
+      "another unacknowledged scan must not advance the saved cursor",
+    );
     rejectPost = false;
     assert.equal((await run("scan")).code, 0);
     assert.notEqual(readFileSync(join(root, "feishu-review/work/ou_me/cursor.json"), "utf8"), cursor);
@@ -134,7 +146,12 @@ test("fake CLI scan, confirmation and GitLab admission survive replay and retain
       assert.equal(existsSync(join(root, "gitlab/requests/42/7.json")), false);
     }
     writeFileSync(mrFile, JSON.stringify({ ...mr, draft: true }));
-    assert.equal((await run("review", confirmed)).code, 1);
+    const ineligible = await run("review", confirmed);
+    assert.equal(ineligible.code, 0, ineligible.stderr);
+    const skipped = JSON.parse(ineligible.stdout.split("```agent-autoloop\n")[1].split("\n```")[0]);
+    assert.match(skipped.notice[0].text, /MR 未满足审查条件/);
+    assert.match(skipped.notice[0].key, /^feishu-review:/);
+    assert.equal(existsSync(join(root, "gitlab/requests/42/7.json")), false);
     assert.equal(events.size, 1);
     writeFileSync(mrFile, JSON.stringify(mr));
     const accepted = await run("review", confirmed);
