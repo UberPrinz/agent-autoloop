@@ -1,4 +1,5 @@
 import { postEvent, diagnostic } from "./errors.ts";
+import { scanMerged } from "./merged.ts";
 export function discoveryPath(projectId: number): string {
   if (!Number.isSafeInteger(projectId) || projectId <= 0) throw new Error("项目编号无效");
   return `projects/${projectId}/merge_requests?state=opened&per_page=100`;
@@ -17,12 +18,12 @@ export async function scanGitlab(
   deps: { now?: () => number; probe?: boolean } = {},
 ): Promise<ScanResult | undefined> {
   const now = deps.now ?? Date.now;
-  const { readFileSync, existsSync } = await import("node:fs");
+  const { readFileSync } = await import("node:fs");
   const { HOME, RULES_FILE } = await import("../../host/home.ts");
   const { loadInstructions } = await import("./instructions.ts");
   const { join } = await import("node:path");
   const { loadConfig, policyHash } = await import("./config.ts");
-  const { hash, atomicFile, canonical } = await import("./storage.ts");
+  const { hash, canonical } = await import("./storage.ts");
   const { GitLab, TemporaryError } = await import("./api.ts");
   const { verifyProjectRemote } = await import("./trusted-rules.ts");
   const { scanProject } = await import("./scan.ts");
@@ -53,6 +54,12 @@ export async function scanGitlab(
   if (user?.id !== config.reviewerId) throw new Error("GitLab 登录身份与配置不符");
   const token = readFileSync(config.sourceKeyPath, "utf8").trim();
   if (!token) throw new Error("来源密钥为空");
+  const post = async (event: object) =>
+    (await postEvent(`${config.hubUrl}/v1/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(event),
+    })) as { event: number; duplicate: boolean; routed: string[] };
   const errors: string[] = [];
   let foundManual = false;
   let result: ScanResult | undefined;
@@ -77,7 +84,6 @@ export async function scanGitlab(
           continue;
         }
         const digest = policyHash(config, project, instructionsDigest);
-        const file = join(config.dataRoot, "gitlab", "requests", `${project.id}`, `${iid}.json`);
         const previous = latestRequest(join(config.dataRoot, "gitlab"), project.id, iid);
         if (
           reuseHead &&
@@ -153,11 +159,7 @@ export async function scanGitlab(
           detail: JSON.stringify(detail),
           link: mrUrl,
         };
-        const receipt: any = await postEvent(`${config.hubUrl}/v1/events`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify(event),
-        });
+        const receipt = await post(event);
         if (
           !Number.isSafeInteger(receipt.event) ||
           typeof receipt.duplicate !== "boolean" ||
@@ -181,7 +183,6 @@ export async function scanGitlab(
         mrs.push(await gl.get(`projects/${project.id}/merge_requests/${iid}`));
       }
       const digest = policyHash(config, project, instructionsDigest);
-      const directory = join(config.dataRoot, "gitlab", "requests", `${project.id}`);
       await scanProject(config, project, metadata.path_with_namespace, digest, {
         retryUnrouted,
         now,
@@ -190,15 +191,10 @@ export async function scanGitlab(
         list: async () => mrs,
         read: (iid) => latestRequest(join(config.dataRoot, "gitlab"), project.id, iid),
         write: (record) => saveRequest(join(config.dataRoot, "gitlab"), record),
-        post: async (event) => {
-          const receipt: any = await postEvent(`${config.hubUrl}/v1/events`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify(event),
-          });
-          return receipt as { event: number; duplicate: boolean; routed: string[] };
-        },
+        post,
       });
+      const opened = new Set(mrs.filter((mr) => mr.state === "opened").map((mr) => mr.iid));
+      await scanMerged(config, project, instructions.ruleName, gl, opened, retryUnrouted, post);
     } catch (error) {
       if (error instanceof TemporaryError) temporary = true;
       else permanent = true;
