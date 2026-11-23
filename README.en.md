@@ -255,6 +255,8 @@ For GitLab MR review setup and confirmation, see [GitLab review configuration](d
 
 Local builds support `install-local` into a fixed data directory, independently of the development checkout. Use `gitlab check` for local validation and `gitlab scan` for an immediate scan. Paths inside GitLab configuration resolve relative to that file; the model is configured once. Scheduling uses the existing `when.cron`. See the [setup and maintenance guide](docs/gitlab-review.md).
 
+After GitLab confirms an MR has merged, the regular scan automatically closes its pending review cards, including existing cards for MRs recorded before the upgrade.
+
 GitLab review uses the trusted `prompt` from `rules.json`. Each repository reuses one dedicated `codereview-worktree`, created from `origin/main` on first use. Subsequent tasks reset it to the latest main and discard all uncommitted changes and untracked files before starting Codex there. Codex natively discovers repository instructions and repository/user Skills. The plugin does not maintain a per-file rules list or a separate Skill loader. Codex reads the MR from its URL; MR code is never checked out or executed, and the daily development checkout is untouched. Legacy GitLab `skill`, `skillPath`, `projects.rules`, and GitLab routing `rule.skill` settings are rejected; other agents retain standard `rule.skill` behavior. See the [GitLab guide](docs/gitlab-review.md).
 
 

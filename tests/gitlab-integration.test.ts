@@ -1,4 +1,4 @@
-// Failure modes: ineligible requests retry or disappear without a manual explanation; completed MRs retry forever; CI blocks execution or answer publication; a remote report cannot resume, or a stale rule copy accepts a Hub job.
+// Failure modes: merged MR review cards stay open or unrelated cards close; ineligible requests retry or disappear without a manual explanation; completed MRs retry forever; CI blocks execution or answer publication; a remote report cannot resume, or a stale rule copy accepts a Hub job.
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
 import {
@@ -90,7 +90,7 @@ test("GitLab event and answer travel through the real Hub and Worker receipt", a
     writeFileSync(versionFile, JSON.stringify({ ...version, diffs: [{ ...version.diffs[0], too_large: true }] }));
     writeFileSync(
       glab,
-      `#!/usr/bin/env node\nconst fs=require('fs'),p=process.argv[3],a=process.argv;if(a.includes('POST')) {if(process.env.TEST_POST_FAIL){process.stdout.write('HTTP/1.1 400 Bad Request\\r\\n\\r\\n{}');process.exit(1)}let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const b=JSON.parse(s);fs.appendFileSync(${JSON.stringify(join(root, "posts.log"))},JSON.stringify(b)+'\\n');if(process.env.TEST_PUBLICATION){const f=${JSON.stringify(join(root, "config.json"))},c=JSON.parse(fs.readFileSync(f));c.projects[0].publication=process.env.TEST_PUBLICATION;fs.writeFileSync(f,JSON.stringify(c));}if(process.env.TEST_CHANGE_RULES)require('child_process').execFileSync('git',['--git-dir',${JSON.stringify(bare)},'update-ref','refs/heads/main',process.env.TEST_CHANGE_RULES]);process.stdout.write('HTTP/1.1 201 Created\\r\\nContent-Type: application/json\\r\\n\\r\\n'+JSON.stringify({id:'d',notes:[{id:3,position:b.position}]}));});}else {if(p.includes('/pipelines/'))process.exit(8);if(p.includes('/versions')){fs.writeFileSync(${JSON.stringify(join(root, "unexpected-versions"))},'called');process.exit(9)}const current=JSON.parse(fs.readFileSync(${JSON.stringify(mrFile)}));const checks=fs.existsSync(${JSON.stringify(join(root, "checks-state.json"))})?JSON.parse(fs.readFileSync(${JSON.stringify(join(root, "checks-state.json"))})):{};let v=p.includes('/pipelines/10/jobs?')?[{id:101,name:'build',status:checks.job||'success',commit:{id:current.sha},pipeline:{id:10}}]:p.includes('/pipelines/10/bridges?')?[{id:102,name:'board',status:'success',commit:{id:current.sha},pipeline:{id:10},downstream_pipeline:{id:11,project_id:42,sha:current.sha}}]:p.endsWith('/pipelines/11')?{id:11,project_id:42,sha:current.sha,status:checks.child||'success'}:p==='user'?{id:8}:p==='projects/42'?{id:42,path_with_namespace:'team/app',ssh_url_to_repo:${JSON.stringify(bare)}}:p.includes('/discussions?')?(process.env.TEST_OLD?[{notes:[{author:{id:8},body:'<!-- agent-autoloop:action='+('d'.repeat(64))+' -->',position:{head_sha:'e'.repeat(40)}}]}]:[]):p.includes('/versions/1')?JSON.parse(fs.readFileSync(${JSON.stringify(versionFile)})):p.includes('/versions?')?[JSON.parse(fs.readFileSync(${JSON.stringify(versionFile)}))]:JSON.parse(fs.readFileSync(${JSON.stringify(mrFile)}));console.log(JSON.stringify(v));}`,
+      `#!/usr/bin/env node\nconst fs=require('fs'),p=process.argv[3],a=process.argv;if(a.includes('POST')) {if(process.env.TEST_POST_FAIL){process.stdout.write('HTTP/1.1 400 Bad Request\\r\\n\\r\\n{}');process.exit(1)}let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const b=JSON.parse(s);fs.appendFileSync(${JSON.stringify(join(root, "posts.log"))},JSON.stringify(b)+'\\n');if(process.env.TEST_PUBLICATION){const f=${JSON.stringify(join(root, "config.json"))},c=JSON.parse(fs.readFileSync(f));c.projects[0].publication=process.env.TEST_PUBLICATION;fs.writeFileSync(f,JSON.stringify(c));}if(process.env.TEST_CHANGE_RULES)require('child_process').execFileSync('git',['--git-dir',${JSON.stringify(bare)},'update-ref','refs/heads/main',process.env.TEST_CHANGE_RULES]);process.stdout.write('HTTP/1.1 201 Created\\r\\nContent-Type: application/json\\r\\n\\r\\n'+JSON.stringify({id:'d',notes:[{id:3,position:b.position}]}));});}else {if(p.includes('/pipelines/'))process.exit(8);if(p.includes('/versions')){fs.writeFileSync(${JSON.stringify(join(root, "unexpected-versions"))},'called');process.exit(9)}const current=JSON.parse(fs.readFileSync(${JSON.stringify(mrFile)}));const checks=fs.existsSync(${JSON.stringify(join(root, "checks-state.json"))})?JSON.parse(fs.readFileSync(${JSON.stringify(join(root, "checks-state.json"))})):{};let v=p.includes('/pipelines/10/jobs?')?[{id:101,name:'build',status:checks.job||'success',commit:{id:current.sha},pipeline:{id:10}}]:p.includes('/pipelines/10/bridges?')?[{id:102,name:'board',status:'success',commit:{id:current.sha},pipeline:{id:10},downstream_pipeline:{id:11,project_id:42,sha:current.sha}}]:p.endsWith('/pipelines/11')?{id:11,project_id:42,sha:current.sha,status:checks.child||'success'}:p.includes('state=opened')?(current.state==='opened'?[current]:[]):p.includes('state=merged')?(current.state==='merged'&&new URLSearchParams(p.split('?')[1]).getAll('iids[]').includes(String(current.iid))?[current]:[]):p==='user'?{id:8}:p==='projects/42'?{id:42,path_with_namespace:'team/app',ssh_url_to_repo:${JSON.stringify(bare)}}:p.includes('/discussions?')?(process.env.TEST_OLD?[{notes:[{author:{id:8},body:'<!-- agent-autoloop:action='+('d'.repeat(64))+' -->',position:{head_sha:'e'.repeat(40)}}]}]:[]):p.includes('/versions/1')?JSON.parse(fs.readFileSync(${JSON.stringify(versionFile)})):p.includes('/versions?')?[JSON.parse(fs.readFileSync(${JSON.stringify(versionFile)}))]:JSON.parse(fs.readFileSync(${JSON.stringify(mrFile)}));console.log(JSON.stringify(v));}`,
       { mode: 0o700 },
     );
     const report = {
@@ -1320,6 +1320,83 @@ test("GitLab event and answer travel through the real Hub and Worker receipt", a
         `automatic publication stopped after changing to ${target}`,
       );
     }
+    // Historic cards already in the Hub are reconciled by the ordinary scanner.
+    const historic = await call("/v1/events", source, { ...event, id: "historic-review" });
+    assert.deepEqual(historic.routed, ["gitlab-review-42"]);
+    const historicJob = (await call("/v1/work?claim=historic&wait=0", worker)).job;
+    assert.ok(historicJob);
+    await call(`/v1/runs/${historicJob.run}/started`, historicJob.token, {});
+    const reviewTitle = "未发现问题，仍需人工审核";
+    const mrLink = "https://gitlab.example.com/team/app/-/merge_requests/7";
+    await call(`/v1/runs/${historicJob.run}/result`, historicJob.token, {
+      outcome: "done",
+      ask: [
+        ask,
+        {
+          ...ask,
+          about: undefined,
+          key: "legacy",
+          title: "确认发布审查评论",
+          text: `MR 42/7，版本 ${head}，共 1 条。`,
+        },
+      ],
+      notice: [
+        { key: "historic-zero", title: reviewTitle, text: `${mrLink}\n\n${reviewTitle}。` },
+        { key: "historic-page", title: "审查结果 2/2", text: ask.text },
+        { key: "other-mr", title: reviewTitle, text: `${mrLink}0\n\n${reviewTitle}。` },
+        { key: "other-kind", title: "需要核查评论是否发出", text: mrLink },
+      ],
+    });
+    writeFileSync(raw.sourceKeyPath, source, { mode: 0o600 });
+    writeFileSync(file, JSON.stringify({ ...raw, hubUrl: baseUrl }));
+    chmodSync(codex, 0o000);
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const exec = promisify(execFile);
+    const localEnv = { ...process.env, AGENT_AUTOLOOP_HOME: root, AGENT_AUTOLOOP_RULES: rulesPath };
+    const scan = () => exec(process.execPath, ["plugins/gitlab/poll.ts", "--config", file], { env: localEnv });
+    writeFileSync(mrFile, JSON.stringify({ ...mr, state: "closed" }));
+    await scan();
+    assert.equal((await call("/v1/work?claim=closed-mr&wait=0", worker)).job ?? null, null);
+    writeFileSync(mrFile, JSON.stringify({ ...mr, state: "merged" }));
+    await scan();
+    const cleanup = (await call("/v1/work?claim=merged-mr&wait=0", worker)).job;
+    assert.ok(cleanup, "the usual scan must also wake a review lane for already merged MRs");
+    await call(`/v1/runs/${cleanup.run}/started`, cleanup.token, {});
+    assert.equal(cleanup.context.open.length, 6);
+    writeFileSync(context, JSON.stringify(cleanup.context));
+    writeFileSync(join(root, "entry.json"), JSON.stringify({ job: { rule: cleanup.rule } }));
+    const postsBeforeCleanup = readFileSync(join(root, "posts.log"), "utf8");
+    const executeCleanup = () =>
+      exec(process.execPath, ["plugins/gitlab/run.ts", "--config", file, "--model", "model"], {
+        env: { ...localEnv, AGENT_AUTOLOOP_CONTEXT: context, AGENT_AUTOLOOP_RUN: String(cleanup.run) },
+      });
+    writeFileSync(mrFile, JSON.stringify({ ...mr, state: "opened" }));
+    const notMerged = resultFrom(readMessage((await executeCleanup()).stdout), {});
+    assert.equal(notMerged.problem, undefined);
+    assert.equal(notMerged.result.resolve?.length ?? 0, 0, "a source event cannot prove the MR was merged");
+    writeFileSync(mrFile, JSON.stringify({ ...mr, state: "merged" }));
+    const resolved = resultFrom(readMessage((await executeCleanup()).stdout), {});
+    assert.equal(resolved.problem, undefined);
+    assert.equal(resolved.result.resolve?.length, 4);
+    assert.ok(resolved.result.resolve?.every(({ reason }) => reason.includes("已合入")));
+    assert.equal(resolved.result.ask, undefined);
+    assert.equal(resolved.result.notice, undefined);
+    assert.deepEqual((await call(`/v1/runs/${cleanup.run}/result`, cleanup.token, resolved.result)).rejected, []);
+    const owner = hub.addKey("owner", "test-owner");
+    const state = await call("/v1/state", owner);
+    const closedCards = state.recentCards.filter((card: { result: string }) => card.result?.includes("已合入"));
+    assert.equal(closedCards.length, 4, "the Hub retains the merge reason in card history");
+    assert.ok(closedCards.every((card: { state: string }) => card.state === "closed"));
+    const remaining = state.cards.filter((card: { state: string }) => card.state === "open");
+    assert.deepEqual(
+      remaining.map((card: { text: string }) => card.text).sort(),
+      [mrLink, `${mrLink}0\n\n${reviewTitle}。`].sort(),
+    );
+    assert.equal(readFileSync(join(root, "posts.log"), "utf8"), postsBeforeCleanup);
+    await scan();
+    assert.equal((await call("/v1/work?claim=repeat-cleanup&wait=0", worker)).job ?? null, null);
+    chmodSync(codex, 0o700);
     // Keep synchronous terminal probes after the Hub HTTP dialogue; they must not extend idle socket reuse.
     writeFileSync(file, JSON.stringify(raw));
     writeFileSync(rulesPath, originalRulesForRace);

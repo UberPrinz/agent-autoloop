@@ -19,11 +19,14 @@ import { jobInstructions } from "./instructions.ts";
 import { nativeBasis } from "./native.ts";
 import { resumeAnswer, resumeAutomatic, resumeSaved } from "./resume.ts";
 import type { Job } from "../../protocol/job.ts";
+import type { Later } from "../../protocol/validate.ts";
+import { resolveMerged } from "./merged.ts";
 
 let summary = "本轮已处理";
 let answerSummary: string | null = null;
 const asks: { key: string; title: string; text: string; options: string[]; about: string }[] = [];
 const resolves: { card: number; reason: string }[] = [];
+const later: Later[] = [];
 const notices: { key: string; title: string; text: string }[] = [];
 function ask(key: string, title: string, text: string, about: object, options = ["已处理", "稍后处理"]) {
   asks.push({ key, title, text, options, about: JSON.stringify(about) });
@@ -33,10 +36,11 @@ function emit() {
     ...(asks.length ? { ask: asks } : {}),
     ...(resolves.length ? { resolve: resolves } : {}),
     ...(notices.length ? { notice: notices } : {}),
+    ...(later.length ? { later } : {}),
   };
   console.log(
     (answerSummary ?? summary) +
-      (asks.length || resolves.length || notices.length
+      (asks.length || resolves.length || notices.length || later.length
         ? `\n\`\`\`agent-autoloop\n${JSON.stringify(receipt)}\n\`\`\``
         : ""),
   );
@@ -69,11 +73,14 @@ async function main() {
       }
     }
     answerSummary = answerOutcome(outcomes);
-    if (answerSummary && !hasEvents) return;
   }
+  const cleanup = await resolveMerged(config, context);
+  resolves.push(...cleanup.resolve);
+  later.push(...cleanup.later);
+  if (answerSummary && !hasEvents) return;
   const events: { detail: string }[] = context.events.filter((event) => eventMatches(event, config.instanceKey));
   if (!events.length) {
-    summary = "没事可做：没有有效的 GitLab 请求";
+    summary = resolves.length ? "没事可做：已收尾 MR 合入前的审查卡片" : "没事可做：没有有效的 GitLab 请求";
     return;
   }
   const parsed = events
